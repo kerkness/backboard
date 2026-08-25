@@ -7532,14 +7532,14 @@ class WebInterface(object):
 
         version = 'Unknown'
         try:
-            v = requests.get(querysab, params={'mode': 'version'}, verify=verify)
+            v = requests.get(querysab, params={'mode': 'version'}, verify=verify, timeout=(5, 20))
             if str(v.status_code) == '200':
                 try:
                     version = v.json()['version']
                 except Exception as e:
                     version = v.text.strip()
                 logger.fdebug('sabnzbd version: %s' % version)
-            r = requests.get(querysab, params=payload, verify=verify)
+            r = requests.get(querysab, params=payload, verify=verify, timeout=(5, 20))
         except Exception as e:
             logger.warn('Error fetching data from %s: %s' % (querysab, e))
             if requests.exceptions.SSLError:
