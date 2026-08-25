@@ -519,6 +519,10 @@ class GC(object):
         return resultlist, next_page
 
     def parse_downloadresults(self, id, mainlink, comicinfo=None, packinfo=None, link_type_failure=None):
+        if id is None:
+            logger.warn('[GETCOMICS] Cannot retry download - no record id was provided for %s. Aborting retry.' % (mainlink,))
+            return False
+
         try:
             booktype = comicinfo[0]['booktype']
         except Exception:
@@ -812,9 +816,12 @@ class GC(object):
                                logger.info('[MEGA] SD-Digital preference detected...attempting %s' % kk['series'])
                                link_matched = True
                             except KeyError:
-                                kk = tmp_links[site_position['normal:mega']]
-                                logger.info('[MEGA] mega preference detected...attempting %s' % kk['series'])
-                                link_matched = True
+                                try:
+                                    kk = tmp_links[site_position['normal:mega']]
+                                    logger.info('[MEGA] mega preference detected...attempting %s' % kk['series'])
+                                    link_matched = True
+                                except KeyError:
+                                    logger.fdebug('[MEGA] no SD-Digital/normal mega link available - moving to next priority site.')
 
                     elif not link_matched and site_lp == 'pixeldrain':
                         sub_site_chk = [y for y in tmp_sites if 'pixel' in y]
@@ -824,9 +831,12 @@ class GC(object):
                                 logger.info('[PixelDrain] SD-Digital preference detected...attempting %s' % kk['series'])
                                 link_matched = True
                             except KeyError:
-                                kk = tmp_links[site_position['normal:pixeldrain']]
-                                logger.info('[PixelDrain] PixelDrain preference detected...attempting %s' % kk['series'])
-                                link_matched = True
+                                try:
+                                    kk = tmp_links[site_position['normal:pixeldrain']]
+                                    logger.info('[PixelDrain] PixelDrain preference detected...attempting %s' % kk['series'])
+                                    link_matched = True
+                                except KeyError:
+                                    logger.fdebug('[PixelDrain] no SD-Digital/normal pixeldrain link available - moving to next priority site.')
 
                     elif not link_matched and site_lp == 'mediafire':
                         sub_site_chk = [y for y in tmp_sites if 'mediafire' in y]
@@ -836,9 +846,12 @@ class GC(object):
                                 logger.info('[mediafire] SD-Digital preference detected...attempting %s' % kk['series'])
                                 link_matched = True
                             except KeyError:
-                                kk = tmp_links[site_position['normal:mediafire']]
-                                logger.info('[mediafire] mediafire preference detected...attempting %s' % kk['series'])
-                                link_matched = True
+                                try:
+                                    kk = tmp_links[site_position['normal:mediafire']]
+                                    logger.info('[mediafire] mediafire preference detected...attempting %s' % kk['series'])
+                                    link_matched = True
+                                except KeyError:
+                                    logger.fdebug('[mediafire] no SD-Digital/normal mediafire link available - moving to next priority site.')
 
                     elif not link_matched and site_lp == 'main':
                         try:
@@ -856,9 +869,12 @@ class GC(object):
                                     logger.info('[MAIN-SERVER] main preference detected...attempting %s' % kk['series'])
                                     link_matched = True
                                 except KeyError:
-                                    kk = tmp_links[site_position['normal:mirror download']]
-                                    logger.info('[MIRROR-SERVER] main-mirror preference detected...attempting %s' % kk['series'])
-                                    link_matched = True
+                                    try:
+                                        kk = tmp_links[site_position['normal:mirror download']]
+                                        logger.info('[MIRROR-SERVER] main-mirror preference detected...attempting %s' % kk['series'])
+                                        link_matched = True
+                                    except KeyError:
+                                        logger.fdebug('[MAIN-SERVER] no SD-Digital or normal main/mirror link available - trying next site in ddl_priority_order.')
 
                     if link_matched:
                         link = kk
@@ -872,8 +888,12 @@ class GC(object):
                                link = tmp_links[site_position['normal:mega']]
                                link_matched = True
                            except Exception as e:
-                               link = tmp_links[site_position['normal:mega link']]
-                               link_matched = True
+                               try:
+                                   link = tmp_links[site_position['normal:mega link']]
+                                   link_matched = True
+                               except Exception as e:
+                                   logger.info('[MEGA] Unable to attain proper link...')
+                                   link_matched = False
                    elif not link_matched and site_lp == 'pixeldrain':
                        sub_site_chk = [y for y in tmp_sites if 'pixel' in y]
                        if sub_site_chk:
