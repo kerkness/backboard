@@ -612,6 +612,7 @@ def start():
 
             if CONFIG.ENABLE_DDL is True:
                 queue_schedule('ddl_queue', 'start')
+                mylar.DDL_QUEUE.put('startup')
 
             if getattr(CONFIG, 'JD2_ENABLE', False) is True:
                 queue_schedule('jd2_queue', 'start')
