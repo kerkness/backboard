@@ -29,3 +29,12 @@ __pycache__
 .devcontainer/config
 .devcontainer/comics
 .devcontainer/downloads
+
+# --- kerkness fork: local environment ---
+venv/
+.mylar_maintenance.db
+backup/
+migration-backup-*/
+*.bak
+*.bak-*
+*.deb
