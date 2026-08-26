@@ -122,6 +122,10 @@ class Api(object):
         cherrypy.response.headers['Content-Type'] = 'text/event-stream'
         cherrypy.response.headers['Cache-Control'] = 'no-cache'
         cherrypy.response.headers['Connection'] = 'keep-alive'
+        # EventSource is CORS-governed. Without this the stream is blocked for any
+        # front-end served from a different origin - which includes the dev server
+        # during UI work. The JSON branch below already sends the same header.
+        cherrypy.response.headers['Access-Control-Allow-Origin'] = '*'
         return data
 
     def _successResponse(self, results):
