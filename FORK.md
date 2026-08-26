@@ -10,33 +10,79 @@ Fixes that matter here (GetComics/provider breakage, DB locks, client API change
 upstream, so staying merge-able is worth more than independence. This fork exists to carry
 local fixes without waiting on review, not to diverge.
 
+## The larger plan
+
+The long-term goal is a **candidate-review acquisition flow**: when issue-level search
+fails, widen to a series search, show the user real candidates, and resolve pack contents
+*after* download instead of guessing before it.
+
+**Plan of record:** [Mylar Fork Charter](https://claude.ai/code/artifact/5ea6c5d5-111f-446b-986f-e94cd89a603e)
+— evidence, the seven-step flow, architecture decisions, and the phased sequence.
+Read it before starting work; this file only carries what lives in the repo.
+
+Nothing from that plan is implemented yet.
+
 ## Strategy — read this before making changes
 
-Measured over the last 60 upstream commits (Feb–Aug 2026):
+Measured over the last 60 upstream commits (Feb–Aug 2026, ~9/month):
 
-| Path | Commits touching it |
-|---|---|
-| `data/` (templates) | 15 / 60 |
-| `mylar/webserve.py` | 13 / 60 |
-| `mylar/config.py` | 10 / 60 |
-| `mylar/api.py` | 4 / 60 |
-| `mylar/getcomics.py` | 2 / 60 |
-| `mylar/search.py` | 2 / 60 |
+| Path | Commits | Divergence cost |
+|---|---|---|
+| `mylar/search_filer.py` | **0 / 60** | Free. The whole matching layer, untouched in six months. |
+| `mylar/search.py` | 2 / 60 | Cheap. Search orchestration. |
+| `mylar/getcomics.py` | 2 / 60 | Cheap. Query shapes, `check_for_pack`. |
+| `mylar/api.py` | 4 / 60 | Cheap. **Primary work surface.** |
+| `mylar/config.py` | 10 / 60 | Moderate. |
+| `mylar/webserve.py` | 13 / 60 | Expensive — busiest file in the tree. |
+| `data/interfaces/default/config.html` | 7 / 60 | Expensive. Don't touch. |
+| all other templates | 0–3 / 60 | Cheap. |
 
-**The UI layer is the most-churned part of the codebase upstream.** Editing
-`webserve.py` or `data/interfaces/` in place is therefore the most expensive possible
-place to diverge — it collides with exactly what upstream changes most.
+Two sanctioned places to diverge:
 
-So: **UI work does not happen in this repo.** Mylar exposes 56 API endpoints in
-`mylar/api.py` (`getIndex`, `getComic`, `addComic`, `getWanted`, `getUpcoming`,
-`getHistory`, `forceSearch`, `queueIssue`/`unqueueIssue`, `changeStatus`, `refreshComic`,
-covers via `getArt`/`getIssueArt`) plus `eventStreamResponse` — a server-sent-events
-channel keyed by `SSE_KEY` — for live status. A separate front-end talks to that and has
-zero merge surface against upstream.
+1. **The search/match layer** (`search_filer.py`, `search.py`, `getcomics.py`) — the
+   lowest-churn code in the project. This is where the new flow's logic belongs.
+2. **The API** (`api.py`) — extend it with new endpoints rather than editing
+   `webserve.py` handlers in place.
 
-Known API gaps: no config/settings endpoints and no pull-list endpoint. Keep Mylar's
-existing UI for settings; replace the views that matter (library, wanted, history, queue).
-If the API needs extending, `api.py` is low-churn (4/60) and a cheap place to patch.
+**Correction (26 Aug 2026):** an earlier version of this file claimed the UI layer was
+the most-churned part of the codebase and that UI work should therefore happen elsewhere.
+That was wrong, and the reasoning is worth recording so it isn't re-litigated. The raw
+commit count treated a one-line bugfix the same as a redesign. Inspecting the actual
+commits: 550 insertions across `data/` in six months, entirely config-screen options and
+bugfixes — no redesign. Template churn is concentrated in `config.html` (7/60); most
+templates were touched **zero** times. Rewriting the views is cheap. The controller
+behind them (`webserve.py`, 13/60) is the real hazard — so put new flow logic in new
+modules and new endpoints, not in existing handlers.
+
+## UI architecture — decided 26 Aug 2026
+
+**A static SPA (Vite + React + TypeScript), built into `data/ui/` and served by Mylar
+itself at `/ui`.**
+
+CherryPy already mounts static directories in `mylar/webstart.py` (`/js`, `/css`,
+`/images`), so adding `/ui` is a four-line change. Consequences that drove the decision:
+
+- **Same origin as the API** — no CORS, existing auth applies, and `EventSource` against
+  the SSE channel gives live download/unpack progress without polling.
+- **No new runtime.** Deployment stays one systemd unit; the fork ships with its own UI.
+- Dev runs a Vite server against `:8090` (the API already sends
+  `Access-Control-Allow-Origin: *` on every JSON response, so this works unchanged).
+
+Rejected, with reasons, so these don't get re-proposed:
+
+- **Laravel / PHP** — needs a PHP runtime and a second service for no benefit the SPA
+  doesn't already provide.
+- **Next / Nuxt** — both exist for SSR and a Node server. No SEO, no public traffic, no
+  server-side fetching benefit; a Node runtime re-introduces the weight that ruled out PHP.
+- **NativePHP / Electron** — ships a runtime plus a browser engine to render what is
+  already a web page, gives up multi-device access, and makes us a distributor (three
+  platform builds, signing, update channel, app↔daemon version coupling).
+
+Existing API surface to build on: 56 endpoints in `api.py` (`getIndex`, `getComic`,
+`addComic`, `getWanted`, `getUpcoming`, `getHistory`, `forceSearch`,
+`queueIssue`/`unqueueIssue`, `changeStatus`, `refreshComic`, covers via
+`getArt`/`getIssueArt`) plus `eventStreamResponse`. Known gaps: no config/settings
+endpoints and no pull-list endpoint — settings stay in the existing interface.
 
 ## Branch layout
 
@@ -93,6 +139,39 @@ Both `requests.get()` calls in the SAB history check lacked timeouts; an unrespo
 host could hang the thread indefinitely. Now `timeout=(5, 20)`.
 
 *Conflict risk: moderate* — `webserve.py` is high-churn, but this is a two-line change.
+
+## Local config and data changes
+
+Not code, so not in any commit — recorded here so they aren't a mystery later.
+
+### `config.ini` — `pack_priority = True` (25 Aug 2026)
+
+Off by default. Prepends a `"<Series> <Year>"` query ahead of the four issue-level shapes,
+so collected runs can match. Set it with the service **stopped** — `writeconfig()` rewrites
+the whole file (`mode='w+'`) and fires on events like the pull-list refresh, so a live edit
+gets clobbered. It is not exposed in the web UI; the file is the only lever.
+
+```bash
+sudo systemctl stop mylar.service
+sed -i 's/^pack_priority = False$/pack_priority = True/' /home/kerkness/mylar3/config.ini
+sudo systemctl start mylar.service
+```
+
+Known cost: the query is unquoted, so common-word titles match broadly. `Of the Earth`
+walked 31 result pages at `ddl_query_delay = 10` — over 5 minutes for one issue, against
+~46s normally. A page-walk cap in `perform_search_queries` is a good candidate for this fork.
+
+### `mylar.db` — Cavewoman `Corrected_Type = TPB` (26 Aug 2026)
+
+ComicID `19538`, set via `cmd=changeBookType`. Left in place deliberately.
+
+`booktype` of TPB/HC/GN sets `chktpb = 1`, which prepends a bare series-name query
+(`Cavewoman`) instead of removing it. That took the search from 0 results to 12 real ones
+— but all 12 were still rejected, because the postings are named story arcs and a
+`Collection (1996-2014)`, none of which map to "issue 1 of 1993". This is the canonical
+failing case the charter's flow is designed around; see the charter for the full write-up.
+
+Revert with `cmd=changeBookType&id=19538&booktype=Print` if it causes trouble.
 
 ## Merging upstream
 
