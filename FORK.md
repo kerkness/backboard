@@ -199,6 +199,33 @@ A healthy start logs `[DDL-QUEUE] Repopulating DDL queue with N previously incom
 item(s)` and then drains. A dead worker shows `Uncaught exception` and the `Queued` count
 never falls.
 
+## Session log
+
+### 26 Aug 2026 — Phase 01 complete, result was negative
+
+The existing manual picker **cannot** serve as the candidate source.
+`choose_specific_download?issueid=116850` returns `[]` and `manualresults` stays empty,
+because the picker iterates `mylar.COMICINFO` — which `checker()` fills only with entries
+`_process_entry` accepted. `manual=True` decides auto-download vs collect-for-choice; it
+does not relax matching. A rejected candidate can never reach the picker.
+
+Phase 02 is re-scoped: capture candidates at `parse_search_result`, upstream of the
+matcher, together with the verdict and reason. Full write-up in the charter.
+
+Concrete defect found on the way: with debug logging on the rejection reason is
+`Booktypes do not match. Looking for Print, this is a TPB/GN/HC/One-Shot` — despite
+Cavewoman's `Corrected_Type` being TPB. Query construction saw TPB (the bare-name query
+fired and returned 12 real results) but the matcher compared against Print. `search.py`
+derives `booktype` in at least two places: line 2370 reads the issue's `Type`, line 2414
+honours `Corrected_Type`. First target for Phase 02.
+
+**Upstream bug worth reporting:** `webserve.toggleVerbose(level=N)` assigns the raw
+query-string to `mylar.LOG_LEVEL` and passes it to `logger.initLogger()`, which compares
+it numerically — HTTP 500, and it leaves the log handlers torn down. Mylar keeps running
+and silently stops writing to `mylar.log`. Recover **without a restart** by calling
+`/toggleVerbose` with *no* `level` parameter (that path assigns an int); call it twice to
+land back on level 1.
+
 ## Monitoring — `scripts/ddl_healthcheck.py`
 
 Installed 26 Aug 2026, running every 30 minutes from the user crontab:
