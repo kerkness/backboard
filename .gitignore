@@ -38,3 +38,4 @@ migration-backup-*/
 *.bak
 *.bak-*
 *.deb
+.ddl_healthcheck.state

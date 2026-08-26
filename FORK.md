@@ -199,6 +199,34 @@ A healthy start logs `[DDL-QUEUE] Repopulating DDL queue with N previously incom
 item(s)` and then drains. A dead worker shows `Uncaught exception` and the `Queued` count
 never falls.
 
+## Monitoring — `scripts/ddl_healthcheck.py`
+
+Installed 26 Aug 2026, running every 30 minutes from the user crontab:
+
+```
+*/30 * * * * /home/kerkness/mylar3/scripts/ddl_healthcheck.py --quiet
+```
+
+Silent when healthy. On a problem it prints, logs to syslog under the tag
+`mylar-healthcheck`, and POSTs to `--webhook` / `$MYLAR_HEALTHCHECK_WEBHOOK` if one is
+set (the payload carries `content`/`text`/`message`, so Discord, Slack and Gotify all
+work). Exit codes: `0` healthy, `1` warning, `2` critical.
+
+```bash
+journalctl -t mylar-healthcheck --since '7 days ago'   # what it has been saying
+./scripts/ddl_healthcheck.py                            # run by hand, always prints
+```
+
+Four independent checks: service running; `Uncaught exception` in the recent log; **no
+progress** (items Queued but `Completed+Failed` unchanged since the previous run); and
+log freshness. The progress check is the load-bearing one — it detects a stall without
+guessing how long a queue *should* take, so a genuine 900-item backlog never
+false-positives. State lives in `.ddl_healthcheck.state` (gitignored); the first run
+only records a baseline.
+
+All five paths were tested before install: stall → critical, draining backlog → OK,
+service down → critical, uncaught exception → critical, stale log → warning.
+
 ## Operational note
 
 The failure that prompted this fork was silent: the DDL worker thread died while the
