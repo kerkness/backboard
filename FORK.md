@@ -93,6 +93,12 @@ endpoints and no pull-list endpoint — settings stay in the existing interface.
 | `kerkness` | Upstream + the local patches below. This is what runs. |
 | `fix/*` | Single fixes, branched off upstream `nightly`, for upstreaming. |
 
+**Upstreaming: not planned (decided 1 Sep 2026).** Several patches here are genuine
+upstream bugs (#5, #8, #11) and would be accepted, but separating them cleanly would mean
+splitting this into two repositories, and that overhead is not worth it for this project.
+Fixes are recorded here as local patches. The `fix/*` convention stays available if that
+judgement ever changes.
+
 ## Remotes
 
 ```
@@ -139,6 +145,119 @@ Both `requests.get()` calls in the SAB history check lacked timeouts; an unrespo
 host could hang the thread indefinitely. Now `timeout=(5, 20)`.
 
 *Conflict risk: moderate* — `webserve.py` is high-churn, but this is a two-line change.
+
+### 4. `feat(search): record what was searched and why results were rejected` — `mylar/search_audit.py` (new), `mylar/search_filer.py`, `mylar/getcomics.py`, `mylar/api.py`, `mylar/__init__.py`
+
+Phase 02. `_process_entry` returned a bare `None` at 18 rejection points and
+`check_for_first_result` kept only the first accepted match, so a failed search left no
+evidence. Each rejection now goes through `_reject(code, detail)` — the return contract is
+unchanged, the reason just stops being discarded — and `search_audit` records the run.
+
+Tables `search_runs` and `search_candidates`. A run is held per-thread and flushed in one
+transaction at the end, so a page-walk doesn't hammer sqlite mid-search; pruned to the last
+20 runs per issue. API: `searchIssue`, `searchSeries`, `getSearchRuns`.
+
+Note `search.py:968` constructs `GC()` without comicid/issueid; they are read from
+`is_info` instead, so search.py needs no change.
+
+*Conflict risk: low.* `search_filer.py` is 0/60 and the edits are mechanical one-liners.
+
+### 5. `fix(sabnzbd): stop treating every error as an SSL failure` — `mylar/webserve.py`
+
+`if requests.exceptions.SSLError:` (7545, 7632) tests a **class object** and is therefore
+always true, so any failure — including SAB simply not running — fell into the
+"retry without SSL verification" path. That retry's two `requests.get` calls had no
+timeout, unlike the calls it retries (patch #3), so startup blocked on the OS connect
+timeout for 2-3 minutes on every restart.
+
+Now `isinstance(e, requests.exceptions.SSLError)`, plus `timeout=(5, 20)` on both retry
+calls. The AirDC++ copy of the same guard is fixed too; its retry already had a timeout.
+
+*Upstreamable: yes* — this is an upstream bug, not a fork concern.
+
+### 6. `feat(candidates): act on results the matcher rejected` — `mylar/candidate_actions.py` (new), `mylar/queues/ddl.py`, `mylar/api.py`, `mylar/config.py`, `mylar/__init__.py`
+
+Download, one-shot, ComicVine lookup and ignore, on any candidate recorded by patch #4.
+
+Downloads reuse the existing GetComics path (`loadsite` → `parse_downloadresults`), which
+is what turns a posting URL into real host links. **They are staged, never
+post-processed.** Bypassing the matcher also bypasses what stops Mylar filing a wrong file
+into a series folder, so there are two independent guards: the download is queued with
+`issueid=None`, and `queues/ddl.py` diverts the finished download into
+`CANDIDATE_FOLDER` (default `<ddl_location>/candidates`) and skips PP. The staging marker
+rides inside `comicinfo`, which the queue payload already carries verbatim — so
+`getcomics.py` needed no change.
+
+Adds `action`, `action_detail`, `ddl_id` to `search_candidates` (via the
+SELECT/OperationalError pattern) and `CANDIDATE_FOLDER` to config.
+
+Note `parse_downloadresults` is the function patch #1 guards. User-chosen postings will
+exercise far more link-shape variety than matched downloads do; watch for KeyErrors there.
+
+*Conflict risk: low* for the new module, *moderate* for `queues/ddl.py` (upstream is
+active in that file — see patch #2).
+
+### 7. `feat(pp): record what post-processing did with a download` — `mylar/pp_audit.py` (new), `mylar/PostProcessor.py`, `mylar/api.py`, `mylar/__init__.py`
+
+Mylar decides each file's fate — filed, duplicate, failed — and reports it only to the
+log. Tables `pp_runs` / `pp_files` now keep it.
+
+Anchored in `PostProcessor.Process()` rather than `process.py`, because PostProcessor runs
+on **its own thread** and a thread-local set upstream is not visible there. `Process()` has
+~30 return points, all of them `queue.put(self.valreturn)`; they are routed through
+`_finish_and_return()` so the audit flushes on the right thread without restructuring the
+method. Correlation back to `ddl_info` is by filename, since `download_info` stops at
+`process.py`.
+
+**Mylar's own pack tally counts duplicates as processed issues** — the InSEXts pack
+reported "8 issues" when all 8 were already owned — so `filed` is derived as
+`total - duplicates - failures`, never taken from that number directly.
+
+*Conflict risk: moderate.* `PostProcessor.py` is 4/60, but the 30-site exit change is broad.
+
+### 8. `fix(pack): trust the resolved filename over the post's advertised range` — `mylar/getcomics.py`, `mylar/search.py`
+
+A GetComics post can advertise a range it does not contain: `Insexts #1 - 13 (2015-2017)`
+whose only file is `Insexts (1-8) (2015-2016)`. Mylar marked issues 9–13 `Snatched` against
+it, and nothing could ever satisfy them.
+
+`parse_downloadresults` now returns `resolved_filename`/`resolved_series`, and
+`GC.pack_covers_issue()` tests an issue number against the ranges in that name (stripping
+4-digit years first, so `(2015-2016)` is not read as an issue range). `search.py` narrows
+`pack_issuelist` to issues the resolved file actually covers, logging `[PACK-RANGE]`.
+
+Returns `None` when the name carries no readable range, and the caller then narrows
+nothing — no evidence is not evidence of absence.
+
+### 9. `feat(ddl): cap the page walk` — `mylar/getcomics.py`, `mylar/config.py`
+
+`DDL_MAX_PAGES` (default 3). Predicted in the session log below: a bare-name query on a
+common title returns hundreds of old postings that the matcher then correctly discards, at
+`ddl_query_delay` seconds per page. Measured: `Thor` returned 400 results, `The Beauty` 487.
+
+### 10. `feat(files): manual matching for staged files` — `mylar/api.py`
+
+`getStagedFiles`, `matchStagedFile`, `deleteStagedFile`. Paths are resolved with
+`realpath` and refused unless inside the staging or DDL roots.
+
+`matchStagedFile` constructs `process.Process` with **keyword** arguments — see patch #11
+for why that matters.
+
+### 11. `fix(api): issueProcess did nothing at all` — `mylar/api.py`
+
+`_issueProcess` called `process.Process(self.comicid, self.folder, self.issueid)`
+positionally against `Process(nzb_name, nzb_folder, failed, issueid, comicid, ...)`, so
+`comicid` landed in `nzb_name` and `issueid` in `failed`.
+
+The consequence is worse than a mis-named file. `post_process()` branches on
+`if self.failed is False:` and `if self.failed is True:` — identity checks. A string
+`failed` (the issueid) matches **neither**, so both branches were skipped: no
+post-processing, no failure handling, no error. The endpoint silently did nothing whenever
+an issueid was supplied.
+
+Now bound by keyword, with the folder basename as `nzb_name` and `apicall=True`.
+
+*Upstream bug.* **Not being upstreamed** — see the note under Branch layout.
 
 ## Local config and data changes
 
@@ -225,6 +344,63 @@ it numerically — HTTP 500, and it leaves the log handlers torn down. Mylar kee
 and silently stops writing to `mylar.log`. Recover **without a restart** by calling
 `/toggleVerbose` with *no* `level` parameter (that path assigns an int); call it twice to
 land back on level 1.
+
+### 31 Aug 2026 — Phase 02 landed, and the first real capture
+
+`search_audit` is live. First recorded run, Bitch Planet #1 (2014), is the charter's case
+in miniature: **8 candidates, 0 accepted**, across five queries —
+
+```
+Bitch Planet 2014            <- pack_priority inserts this first
+"Bitch Planet #1 (2014)"
+Bitch Planet #1 (2014)
+Bitch Planet #1
+Bitch Planet                 <- chktpb inserts the bare name last
+```
+
+The first three returned nothing at all. The last two returned everything, and every
+result was rejected for one of two reasons:
+
+- `Bitch Planet Vol. 1 - 2` (1.6G, flagged as a pack) — **`booktype_mismatch`**: "looking
+  for Print, this result is a TPB". This is almost certainly the thing a human would grab:
+  a collection containing all ten wanted issues, refused purely on booktype.
+- Four `Bitch Planet - Triple Feature #N (2017)` — **`year_mismatch`**. Correct: that is a
+  different 2017 spin-off series, not the 2014 book.
+
+So GetComics appears not to carry the original 2014 single issues at all, only the
+collected volumes. The matcher's rejections are individually defensible; the failure is
+that nothing surfaced "there is a collection here, take it or leave it". That is the
+candidate-review flow.
+
+### 1 Sep 2026 — the InSEXts pack, and why Downloads exists
+
+Mylar's auto-search found a GetComics post for InSEXts #13 and concluded it was a pack of
+**#1–13**, marking issues 9–13 `Snatched`. The only file on that post is
+`Insexts (1-8) (2015-2016)` — the URL itself says `insexts-1-8-2015-2016`. It downloaded
+420MB, post-processed 8 issues, and **every one was a duplicate** of what was already
+owned. Issues 9–13 stayed `Snatched` with nothing that could ever satisfy them.
+
+None of this was visible outside the log, which is what prompted patch #7 and the
+Downloads screen. Cleanup: 9–13 reset to `Wanted`, 420MB of duplicates removed, and a
+stalled duplicate download cancelled.
+
+The root cause is upstream of the audit: `check_for_pack` trusted the post's advertised
+range over the filename and URL. Worth chasing — it is the same class of error as the
+`before_store_date` rejections.
+
+### 1 Sep 2026 — correcting the `before_store_date` claim
+
+Earlier notes in this session flagged `before_store_date` as the top suspect: 86% of all
+rejections. **That was wrong**, and read from aggregate counts without checking values. The
+rejections say things like `posted Thu, 03 Jul 2025, before the store date 2026-08-xx` — a
+2025 posting genuinely cannot be an issue shipping in August 2026. The rule is correct.
+
+What the number actually measured was the **bare-name query's** noise. Rejections by query:
+`Thor` 2000 (400 results × 5 runs), `The Beauty` 487, `Tomorrow Girl` 110. The matcher was
+doing its job on garbage input. Fix is patch #9, not the date rule.
+
+The audit is honest in both directions: it recorded the one genuine accept (InSEXts #13,
+verdict `accepted`, no reason) alongside 3,247 rejections.
 
 ## Monitoring — `scripts/ddl_healthcheck.py`
 

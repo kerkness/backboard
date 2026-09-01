@@ -15,7 +15,7 @@
 #  along with Mylar.  If not, see <http://www.gnu.org/licenses/>.
 
 import mylar
-from mylar import db, mb, importer, search, process, versioncheck, logger, webserve, helpers, encrypted, series_metadata
+from mylar import db, mb, importer, search, process, versioncheck, logger, webserve, helpers, encrypted, series_metadata, candidate_actions
 import threading
 import json
 import cherrypy
@@ -31,6 +31,7 @@ from . import cache
 from operator import itemgetter
 from cherrypy.lib.static import serve_file, serve_download
 import datetime
+import calendar
 
 cmd_list = ['getIndex', 'getComic', 'getUpcoming', 'getWanted', 'getHistory',
             'getLogs', 'getAPI', 'clearLogs','findComic', 'addComic', 'delComic',
@@ -40,7 +41,11 @@ cmd_list = ['getIndex', 'getComic', 'getUpcoming', 'getWanted', 'getHistory',
             'getComicInfo', 'getIssueInfo', 'getArt', 'downloadIssue', 'regenerateCovers',
             'refreshSeriesjson', 'seriesjsonListing', 'checkGlobalMessages',
             'listProviders', 'changeProvider', 'addProvider', 'delProvider',
-            'downloadNZB', 'getReadList', 'getStoryArc', 'addStoryArc', 'listAnnualSeries']
+            'downloadNZB', 'getReadList', 'getStoryArc', 'addStoryArc', 'listAnnualSeries',
+            'getWeeklyPull', 'searchIssue', 'searchSeries', 'getSearchRuns',
+            'getActivity', 'downloadCandidate', 'ignoreCandidate',
+            'lookupCandidate', 'getDownloads', 'getStagedFiles',
+            'matchStagedFile', 'deleteStagedFile']
 
 class Api(object):
 
@@ -136,9 +141,9 @@ class Api(object):
         cherrypy.response.headers['Content-Type'] = self.headers
         return json.dumps(response)
 
-    def _resultsFromQuery(self, query):
+    def _resultsFromQuery(self, query, args=None):
         myDB = db.DBConnection()
-        rows = myDB.select(query)
+        rows = myDB.select(query, args)
 
         results = []
 
@@ -244,7 +249,12 @@ class Api(object):
             ComicPublished as publishYear, \
             ComicYear as year,\
             LatestIssue as latestIssue,\
+            LatestDate as latestDate,\
+            Have as haveIssues,\
             Total as totalIssues,\
+            Type as bookType,\
+            Corrected_Type as correctedBookType,\
+            LastUpdated as lastUpdated,\
             DetailURL as detailsURL,\
             AlternateSearch as alternateSearch \
         FROM comics'
@@ -405,6 +415,52 @@ class Api(object):
             "SELECT w.COMIC AS ComicName, w.ISSUE AS IssueNumber, w.ComicID, w.IssueID, w.SHIPDATE AS IssueDate, w.STATUS AS Status, c.ComicName AS DisplayComicName \
             FROM weekly w JOIN comics c ON w.ComicID = c.ComicID WHERE w.COMIC IS NOT NULL AND w.ISSUE IS NOT NULL AND \
             SUBSTR('0' || w.weeknumber, -2) = '" + week + "' AND w.year = '" + year + "' AND " + select_status_clause + " ORDER BY c.ComicSortName")
+        return
+
+    def _weekOf(self, week=None, year=None):
+        """Resolve a (week, year) pair, defaulting to the current pull week.
+
+        Days in a new year that precede the first Sunday belong to the previous
+        Sunday's week and year -- same rule _getUpcoming applies.
+        """
+        if week is not None and year is not None:
+            return ('%02d' % int(week), str(int(year)))
+
+        today = datetime.date.today()
+        if today.strftime('%U') == '00':
+            weekday = 0 if today.isoweekday() == 7 else today.isoweekday()
+            sunday = today - datetime.timedelta(days=weekday)
+            return (sunday.strftime('%U'), sunday.strftime('%Y'))
+        return (today.strftime('%U'), today.strftime('%Y'))
+
+    def _getWeeklyPull(self, **kwargs):
+        try:
+            week, year = self._weekOf(kwargs.get('week'), kwargs.get('year'))
+        except (TypeError, ValueError):
+            self.data = self._failureResponse('week and year must be numeric')
+            return
+
+        # LEFT JOIN so releases from series that aren't on the watchlist still
+        # come back -- browsing and adding from the pull list depends on it.
+        query = "SELECT w.SHIPDATE AS shipDate, w.PUBLISHER AS publisher, \
+                    w.ISSUE AS issueNumber, w.COMIC AS comicName, \
+                    w.STATUS AS status, w.ComicID AS comicId, w.IssueID AS issueId, \
+                    w.weeknumber AS weekNumber, w.year AS year, w.volume AS volume, \
+                    w.seriesyear AS seriesYear, w.format AS format, \
+                    w.DynamicName AS dynamicName, \
+                    c.ComicID AS watchedComicId, c.ComicName AS watchedComicName, \
+                    c.Status AS seriesStatus, c.ComicImageURL AS imageURL, \
+                    c.DetailURL AS detailsURL \
+                 FROM weekly w LEFT JOIN comics c ON w.ComicID = c.ComicID \
+                 WHERE SUBSTR('0' || w.weeknumber, -2) = ? AND w.year = ? \
+                   AND w.COMIC IS NOT NULL \
+                 ORDER BY w.PUBLISHER COLLATE NOCASE, w.COMIC COLLATE NOCASE, w.ISSUE"
+
+        self.data = self._successResponse({
+            'week': week,
+            'year': year,
+            'issues': self._resultsFromQuery(query, [week, year])
+        })
         return
 
     def _getWanted(self, **kwargs):
@@ -770,7 +826,8 @@ class Api(object):
 
         try:
             ac = webserve.WebInterface()
-            ac.addbyid(self.id, calledby=True, nothread=False)
+            markall = 'true' if str(kwargs.get('wantall', '')).lower() in ('1', 'true', 'yes') else None
+            ac.addbyid(self.id, calledby=True, nothread=False, markall=markall)
             #importer.addComictoDB(self.id)
         except Exception as e:
             self.data = e
@@ -867,6 +924,565 @@ class Api(object):
     def _forceSearch(self, **kwargs):
         search.searchforissue()
 
+    def _queueSearchFor(self, issue, comic):
+        """Put one issue on the search queue. Mirrors webserve's passinfo shape."""
+        mylar.SEARCH_QUEUE.put({
+            'issueid': issue['IssueID'],
+            'comicname': comic['ComicName'],
+            'seriesyear': comic['ComicYear'],
+            'comicid': comic['ComicID'],
+            'issuenumber': issue['Issue_Number'],
+            'booktype': comic['Corrected_Type'] or comic['Type'],
+            'manual': False,
+        })
+
+    def _searchIssue(self, **kwargs):
+        """Search for a single issue. Returns immediately; the run happens on the queue."""
+        if 'id' not in kwargs:
+            self.data = self._failureResponse('Missing parameter: id')
+            return
+
+        myDB = db.DBConnection()
+        issue = myDB.selectone(
+            'SELECT IssueID, ComicID, Issue_Number FROM issues WHERE IssueID=?',
+            [kwargs['id']]
+        ).fetchone()
+        if issue is None:
+            self.data = self._failureResponse('No such issue: %s' % kwargs['id'])
+            return
+
+        comic = myDB.selectone(
+            'SELECT ComicID, ComicName, ComicYear, Type, Corrected_Type FROM comics'
+            ' WHERE ComicID=?', [issue['ComicID']]
+        ).fetchone()
+        if comic is None:
+            self.data = self._failureResponse('No such series: %s' % issue['ComicID'])
+            return
+
+        # A search only runs for a Wanted issue, so mark it the way queueIssue does.
+        myDB.upsert('issues', {'Status': 'Wanted'}, {'IssueID': issue['IssueID']})
+        self._queueSearchFor(issue, comic)
+
+        self.data = self._successResponse({
+            'queued': 1,
+            'issueid': issue['IssueID'],
+            'message': 'Queued issue #%s for search.' % issue['Issue_Number'],
+        })
+        return
+
+    def _searchSeries(self, **kwargs):
+        """Search every Wanted issue in a series."""
+        if 'id' not in kwargs:
+            self.data = self._failureResponse('Missing parameter: id')
+            return
+
+        myDB = db.DBConnection()
+        comic = myDB.selectone(
+            'SELECT ComicID, ComicName, ComicYear, Type, Corrected_Type FROM comics'
+            ' WHERE ComicID=?', [kwargs['id']]
+        ).fetchone()
+        if comic is None:
+            self.data = self._failureResponse('No such series: %s' % kwargs['id'])
+            return
+
+        issues = myDB.select(
+            "SELECT IssueID, ComicID, Issue_Number FROM issues"
+            " WHERE ComicID=? AND Status='Wanted' ORDER BY Int_IssueNumber",
+            [kwargs['id']]
+        )
+        for issue in issues:
+            self._queueSearchFor(issue, comic)
+
+        self.data = self._successResponse({
+            'queued': len(issues),
+            'comicid': comic['ComicID'],
+            'message': 'Queued %s wanted issue(s) for search.' % len(issues),
+        })
+        return
+
+    def _getSearchRuns(self, **kwargs):
+        """Read back what was searched for and what came back.
+
+        Populated by mylar/search_audit.py. Accepts issueid or comicid; without
+        either it returns the most recent runs across everything.
+        """
+        try:
+            limit = min(int(kwargs.get('limit', 25)), 200)
+        except (TypeError, ValueError):
+            self.data = self._failureResponse('limit must be numeric')
+            return
+
+        try:
+            offset = max(int(kwargs.get('offset', 0)), 0)
+        except (TypeError, ValueError):
+            self.data = self._failureResponse('offset must be numeric')
+            return
+
+        where, args = '', []
+        if kwargs.get('issueid'):
+            where, args = 'WHERE issueid=?', [kwargs['issueid']]
+        elif kwargs.get('comicid'):
+            where, args = 'WHERE comicid=?', [kwargs['comicid']]
+
+        myDB = db.DBConnection()
+        total = myDB.selectone(
+            'SELECT COUNT(*) AS n FROM search_runs %s' % where, args
+        ).fetchone()
+
+        runs = self._resultsFromQuery(
+            'SELECT * FROM search_runs %s ORDER BY started DESC LIMIT %d OFFSET %d'
+            % (where, limit, offset), args
+        )
+        # A list view only needs the headline counts; skip the candidate join.
+        summary = str(kwargs.get('summary', '')).lower() in ('1', 'true', 'yes')
+        for run in runs:
+            run['queries'] = run['queries'].split('\n') if run.get('queries') else []
+            run['candidates'] = [] if summary else self._resultsFromQuery(
+                'SELECT * FROM search_candidates WHERE run_id=? ORDER BY seq',
+                [run['run_id']]
+            )
+
+        self.data = self._successResponse({
+            'runs': runs,
+            'total': total['n'] if total else 0,
+            'offset': offset,
+            'limit': limit,
+        })
+        return
+
+    def _queueSnapshot(self, q, limit=50):
+        """Non-destructive peek at a queue.Queue.
+
+        Queue exposes no public read API, so read the underlying deque under the
+        queue's own mutex -- copying without the lock can raise while a worker
+        mutates it. Sentinel strings like 'exit'/'startup' are passed as bare
+        strings rather than dicts, so they are normalised here.
+        """
+        try:
+            with q.mutex:
+                raw = list(q.queue)
+        except Exception as e:
+            logger.warn('[ACTIVITY] unable to read queue: %s' % e)
+            return {'size': 0, 'items': [], 'error': str(e)}
+
+        items = []
+        for entry in raw[:limit]:
+            if isinstance(entry, dict):
+                items.append({
+                    'comicid': entry.get('comicid'),
+                    'issueid': entry.get('issueid'),
+                    'comicname': entry.get('comicname'),
+                    'issuenumber': entry.get('issuenumber'),
+                    'seriesyear': entry.get('seriesyear'),
+                    'booktype': entry.get('booktype'),
+                })
+            else:
+                items.append({'comicname': str(entry)})
+        return {'size': len(raw), 'items': items}
+
+    def _jobRows(self):
+        """Scheduler state from jobhistory, normalised to epoch seconds.
+
+        Two quirks are handled here: the table can hold duplicate rows for a job
+        (Weekly Pullist has two), and next_run_timestamp is not always a float --
+        DB Updater stores a datetime string in it. The *_datetime columns are UTC.
+        """
+        rows = self._resultsFromQuery('SELECT * FROM jobhistory')
+
+        def epoch(row, stamp_key, dt_key):
+            try:
+                return float(row.get(stamp_key))
+            except (TypeError, ValueError):
+                pass
+            try:
+                return calendar.timegm(
+                    datetime.datetime.strptime(
+                        str(row.get(dt_key)), '%Y-%m-%d %H:%M:%S'
+                    ).timetuple()
+                )
+            except (TypeError, ValueError):
+                return None
+
+        now = time.time()
+        jobs = {}
+        for row in rows:
+            name = row.get('JobName')
+            if not name:
+                continue
+            nxt = epoch(row, 'next_run_timestamp', 'next_run_datetime')
+            job = {
+                'name': name,
+                'status': row.get('status'),
+                'last_run_completed': row.get('last_run_completed'),
+                'prev_run': epoch(row, 'prev_run_timestamp', 'prev_run_datetime'),
+                'next_run': nxt,
+                'seconds_until': (nxt - now) if nxt else None,
+            }
+            # Duplicate rows exist; keep whichever knows about the next run.
+            if name not in jobs or (nxt or 0) > (jobs[name]['next_run'] or 0):
+                jobs[name] = job
+
+        return sorted(
+            jobs.values(),
+            key=lambda j: (j['next_run'] is None, j['next_run'] or 0)
+        )
+
+    def _getActivity(self, **kwargs):
+        """Everything in flight or scheduled, for the Activity screen."""
+        myDB = db.DBConnection()
+
+        ddl_counts = {
+            r['status']: r['n'] for r in self._resultsFromQuery(
+                'SELECT status, COUNT(*) AS n FROM ddl_info GROUP BY status'
+            )
+        }
+
+        recent = self._resultsFromQuery(
+            'SELECT run_id, comicid, issueid, comicname, issuenumber, provider,'
+            ' started, finished, status, candidate_count, accepted_count'
+            ' FROM search_runs ORDER BY started DESC LIMIT 15'
+        )
+
+        totals = myDB.selectone(
+            'SELECT COUNT(*) AS runs, COALESCE(SUM(candidate_count),0) AS candidates,'
+            ' COALESCE(SUM(accepted_count),0) AS accepted FROM search_runs'
+        ).fetchone()
+
+        self.data = self._successResponse({
+            'now': time.time(),
+            'queues': {
+                'search': self._queueSnapshot(mylar.SEARCH_QUEUE),
+                'ddl': self._queueSnapshot(mylar.DDL_QUEUE),
+                'postprocess': self._queueSnapshot(mylar.PP_QUEUE),
+                'nzb': self._queueSnapshot(mylar.NZB_QUEUE),
+            },
+            'ddl_status': ddl_counts,
+            'locks': {
+                'search': bool(mylar.SEARCHLOCK),
+                'ddl': bool(mylar.DDL_LOCK),
+            },
+            'jobs': self._jobRows(),
+            'providers': self._resultsFromQuery(
+                'SELECT provider, type, lastrun, active, hits FROM provider_searches'
+            ),
+            'search_totals': {
+                'runs': totals['runs'] if totals else 0,
+                'candidates': totals['candidates'] if totals else 0,
+                'accepted': totals['accepted'] if totals else 0,
+            },
+            'recent_runs': recent,
+        })
+        return
+
+    def _candidateParams(self, kwargs):
+        if 'run_id' not in kwargs or 'seq' not in kwargs:
+            return None, self._failureResponse('Missing parameter: run_id and seq')
+        try:
+            return (kwargs['run_id'], int(kwargs['seq'])), None
+        except (TypeError, ValueError):
+            return None, self._failureResponse('seq must be numeric')
+
+    def _downloadCandidate(self, **kwargs):
+        """Download a candidate the matcher rejected, into the staging folder."""
+        params, failure = self._candidateParams(kwargs)
+        if failure is not None:
+            self.data = failure
+            return
+        run_id, seq = params
+        oneoff = str(kwargs.get('oneoff', '')).lower() in ('1', 'true', 'yes')
+
+        result = candidate_actions.download(run_id, seq, oneoff=oneoff)
+        if result.get('success'):
+            self.data = self._successResponse(result)
+        else:
+            self.data = self._failureResponse(result.get('message', 'Download failed.'))
+        return
+
+    def _ignoreCandidate(self, **kwargs):
+        """Dismiss a candidate so it stops drawing the eye, or undo that."""
+        params, failure = self._candidateParams(kwargs)
+        if failure is not None:
+            self.data = failure
+            return
+        run_id, seq = params
+        undo = str(kwargs.get('undo', '')).lower() in ('1', 'true', 'yes')
+
+        candidate, _ = candidate_actions.get(run_id, seq)
+        if candidate is None:
+            self.data = self._failureResponse('No such candidate.')
+            return
+        self.data = self._successResponse(candidate_actions.ignore(run_id, seq, not undo))
+        return
+
+    def _lookupCandidate(self, **kwargs):
+        """Search ComicVine for the series a candidate posting refers to.
+
+        A candidate carries a posting title, not a ComicVine id, so following it
+        as a series cannot be one click -- this returns CV matches for the caller
+        to choose from, then addComic does the rest.
+        """
+        if 'name' in kwargs and kwargs['name']:
+            name = kwargs['name']
+        else:
+            params, failure = self._candidateParams(kwargs)
+            if failure is not None:
+                self.data = failure
+                return
+            candidate, _ = candidate_actions.get(*params)
+            if candidate is None:
+                self.data = self._failureResponse('No such candidate.')
+                return
+            name = candidate['title'] or ''
+
+        # Strip the noise a GetComics posting title carries: issue numbers,
+        # volume/pack markers, bracketed years and format tags.
+        cleaned = re.sub(r'\(.*?\)|\[.*?\]', ' ', name)
+        # \b after an optional '.' never matches, so spell the dot outside the boundary
+        # or "Vol. 1" leaves a stray period behind in the query.
+        # Consume the volume number with its marker; stripping "Vol" alone would leave
+        # "Vol. 1" as a bare "1" glued to the series name.
+        cleaned = re.sub(r'\b(?:Vol|Volume)\b\.?\s*\d*(?:\s*-\s*\d+)?', ' ', cleaned, flags=re.I)
+        cleaned = re.sub(r'\b(TPB|HC|GN|Annual|Digital|Webrip)\b', ' ', cleaned, flags=re.I)
+        cleaned = re.sub(r'#\s*\d+.*$', ' ', cleaned)
+        cleaned = re.sub(r'\d+\s*-\s*\d+', ' ', cleaned)
+        cleaned = re.sub(r'[-_]+', ' ', cleaned)
+        cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+        cleaned = cleaned.strip(' .,-:;')
+        if not cleaned:
+            self.data = self._failureResponse('Could not read a series name from that title.')
+            return
+
+        try:
+            results = mb.findComic(cleaned, 'series', issue=None) or []
+            results = sorted(
+                results, key=itemgetter('comicyear', 'issues'), reverse=True
+            )
+        except Exception as e:
+            self.data = self._failureResponse('ComicVine lookup failed: %s' % e)
+            return
+
+        self.data = self._successResponse({'query': cleaned, 'results': results})
+        return
+
+    def _getDownloads(self, **kwargs):
+        """Downloads and what post-processing did with them.
+
+        ddl_info carries the transfer; pp_runs/pp_files (mylar/pp_audit.py) carry
+        the outcome, which otherwise only ever reached the log.
+        """
+        try:
+            limit = min(int(kwargs.get('limit', 25)), 200)
+            offset = max(int(kwargs.get('offset', 0)), 0)
+        except (TypeError, ValueError):
+            self.data = self._failureResponse('limit and offset must be numeric')
+            return
+
+        where, args = '', []
+        if kwargs.get('status'):
+            where, args = 'WHERE status=?', [kwargs['status']]
+
+        myDB = db.DBConnection()
+        total = myDB.selectone(
+            'SELECT COUNT(*) AS n FROM ddl_info %s' % where, args
+        ).fetchone()
+
+        downloads = self._resultsFromQuery(
+            # ddl_info declares ID uppercase and sqlite returns the declared name,
+            # so alias explicitly rather than relying on the spelling used here.
+            'SELECT ID AS id, series, year, filename, size, remote_filesize, status,'
+            ' link_type, site, issueid, comicid, pack, issues, updated_date'
+            ' FROM ddl_info %s ORDER BY updated_date DESC, rowid DESC'
+            ' LIMIT %d OFFSET %d' % (where, limit, offset), args
+        )
+
+        for d in downloads:
+            # Progress only means something while a transfer is live.
+            # ddl_info stores sizes like ' 420 MB'; helpers.human2bytes wants '420M'
+            # and raises on anything else, so parse it here instead.
+            d['percent'] = None
+            try:
+                want = int(d['remote_filesize'] or 0)
+                m = re.match(
+                    r'\s*([\d.,]+)\s*([KMGTP])?B?', str(d['size'] or ''), re.I
+                )
+                if want and m:
+                    have = float(m.group(1).replace(',', ''))
+                    have *= 1 << (10 * ' KMGTP'.index((m.group(2) or ' ').upper()))
+                    d['percent'] = round(min(100.0, (have / want) * 100), 1)
+            except Exception:
+                pass
+
+            pp = myDB.selectone(
+                'SELECT * FROM pp_runs WHERE ddl_id=? ORDER BY started DESC', [d['id']]
+            ).fetchone()
+            if pp:
+                d['postprocess'] = dict(list(zip(list(pp.keys()), pp)))
+                d['postprocess']['files'] = self._resultsFromQuery(
+                    'SELECT * FROM pp_files WHERE pp_id=? ORDER BY seq',
+                    [pp['pp_id']]
+                )
+            else:
+                d['postprocess'] = None
+
+            # A pack that advertised a range it did not deliver is the failure mode
+            # worth surfacing: the issues get marked Snatched and nothing satisfies them.
+            d['warning'] = None
+            if d['pack'] and d['postprocess'] and d['postprocess']['duplicate_count']:
+                if not d['postprocess']['filed_count']:
+                    d['warning'] = (
+                        'Every file in this pack was already in your library —'
+                        ' no wanted issue was satisfied.'
+                    )
+
+        self.data = self._successResponse({
+            'downloads': downloads,
+            'total': total['n'] if total else 0,
+            'offset': offset,
+            'limit': limit,
+        })
+        return
+
+    def _stagingRoots(self):
+        """Folders a staged file may legitimately live in."""
+        roots = []
+        for r in (candidate_actions.staging_root(), mylar.CONFIG.DDL_LOCATION):
+            if r and os.path.isdir(r):
+                roots.append(os.path.realpath(r))
+        return roots
+
+    def _safeStagedPath(self, path):
+        """Resolve a caller-supplied path, refusing anything outside the roots."""
+        if not path:
+            return None
+        real = os.path.realpath(path)
+        for root in self._stagingRoots():
+            if real == root or real.startswith(root + os.sep):
+                return real
+        return None
+
+    def _getStagedFiles(self, **kwargs):
+        """Files sitting on disk that no issue has claimed yet."""
+        entries = []
+        roots = self._stagingRoots()
+        for root in roots:
+            try:
+                names = os.listdir(root)
+            except OSError as e:
+                logger.warn('[STAGED] unable to list %s: %s' % (root, e))
+                continue
+            for name in names:
+                full = os.path.join(root, name)
+                # The candidate folder defaults to <ddl_location>/candidates, so it
+                # is nested inside another root; list it once, under itself.
+                if os.path.realpath(full) in roots:
+                    continue
+                try:
+                    st = os.stat(full)
+                except OSError:
+                    continue
+                is_dir = os.path.isdir(full)
+                size = st.st_size
+                contents = []
+                if is_dir:
+                    # A pack arrives as a folder; the files inside are what matter.
+                    for dirpath, _dirs, files in os.walk(full):
+                        for f in files:
+                            fp = os.path.join(dirpath, f)
+                            try:
+                                fsize = os.path.getsize(fp)
+                            except OSError:
+                                fsize = 0
+                            size += fsize
+                            contents.append({
+                                'name': f,
+                                'path': fp,
+                                'size': fsize,
+                            })
+                        if len(contents) > 200:
+                            break
+                entries.append({
+                    'name': name,
+                    'path': full,
+                    'root': root,
+                    'is_dir': is_dir,
+                    'size': size,
+                    'modified': st.st_mtime,
+                    'contents': contents,
+                })
+
+        entries.sort(key=lambda e: e['modified'], reverse=True)
+        self.data = self._successResponse({'files': entries, 'roots': roots})
+        return
+
+    def _matchStagedFile(self, **kwargs):
+        """Post-process one staged file against a specific issue.
+
+        This is the manual match: you assert which issue the file is, and Mylar
+        files and renames it accordingly.
+        """
+        path = self._safeStagedPath(kwargs.get('path'))
+        if path is None:
+            self.data = self._failureResponse('Path is not inside a staging folder.')
+            return
+        if not os.path.exists(path):
+            self.data = self._failureResponse('That file no longer exists.')
+            return
+        if 'issueid' not in kwargs:
+            self.data = self._failureResponse('Missing parameter: issueid')
+            return
+
+        myDB = db.DBConnection()
+        issue = myDB.selectone(
+            'SELECT IssueID, ComicID, Issue_Number FROM issues WHERE IssueID=?',
+            [kwargs['issueid']]
+        ).fetchone()
+        if issue is None:
+            self.data = self._failureResponse('No such issue: %s' % kwargs['issueid'])
+            return
+
+        folder = path if os.path.isdir(path) else os.path.dirname(path)
+        name = os.path.basename(path)
+
+        # Keywords deliberately: _issueProcess passes these positionally and lands
+        # issueid in the `failed` slot.
+        pp = process.Process(
+            nzb_name=name,
+            nzb_folder=folder,
+            issueid=issue['IssueID'],
+            comicid=issue['ComicID'],
+            apicall=True,
+        )
+        threading.Thread(
+            target=pp.post_process, name='MANUAL-MATCH'
+        ).start()
+
+        self.data = self._successResponse({
+            'message': 'Matching "%s" to issue #%s — post-processing started.'
+                       % (name, issue['Issue_Number']),
+            'issueid': issue['IssueID'],
+        })
+        return
+
+    def _deleteStagedFile(self, **kwargs):
+        """Remove a staged file or pack folder."""
+        path = self._safeStagedPath(kwargs.get('path'))
+        if path is None:
+            self.data = self._failureResponse('Path is not inside a staging folder.')
+            return
+        if path in self._stagingRoots():
+            self.data = self._failureResponse('Refusing to delete a staging root.')
+            return
+        try:
+            if os.path.isdir(path):
+                shutil.rmtree(path)
+            else:
+                os.remove(path)
+        except OSError as e:
+            self.data = self._failureResponse('Could not delete: %s' % e)
+            return
+        self.data = self._successResponse({'deleted': path})
+        return
+
     def _issueProcess(self, **kwargs):
         if 'comicid' not in kwargs:
             self.data = self._failureResponse('Missing parameter: comicid')
@@ -886,8 +1502,24 @@ class Api(object):
             self.folder = kwargs['folder']
 
 
-        fp = process.Process(self.comicid, self.folder, self.issueid)
-        self.data = fp.post_process()
+        # fork-local fix: these were passed positionally against
+        # Process(nzb_name, nzb_folder, failed, issueid, comicid, ...), so comicid
+        # landed in nzb_name and issueid in `failed`. A string `failed` matches
+        # neither `is False` nor `is True` in post_process(), so the call did
+        # nothing at all -- no post-processing, no failure handling. (See FORK.md.)
+        fp = process.Process(
+            nzb_name=os.path.basename(os.path.normpath(self.folder)) or 'Manual Run',
+            nzb_folder=self.folder,
+            issueid=self.issueid,
+            comicid=self.comicid,
+            apicall=True,
+        )
+        fp.post_process()
+        self.data = self._successResponse({
+            'message': 'Post-processing started for %s' % self.folder,
+            'comicid': self.comicid,
+            'issueid': self.issueid,
+        })
         return
 
     def _forceProcess(self, **kwargs):

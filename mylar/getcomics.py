@@ -30,7 +30,7 @@ import zipfile
 import json
 import mylar
 from operator import itemgetter
-from mylar import db, logger, helpers, search_filer
+from mylar import db, logger, helpers, search_filer, search_audit
 from mylar.downloaders.jdownloader2 import JDownloader2
 
 class GC(object):
@@ -173,6 +173,22 @@ class GC(object):
 
         self.cookie_receipt()
 
+        # Record what we ask GetComics and what it returns, so a search that finds
+        # nothing still leaves evidence behind. See mylar/search_audit.py.
+        # search.py:968 builds GC() without the ids, but is_info carries both.
+        _info = is_info or {}
+        search_audit.start_run(
+            comicid=_info.get('ComicID') or self.comicid,
+            issueid=_info.get('IssueID') or self.issueid,
+            comicname=self.query.get('comicname') if self.query else None,
+            issuenumber=self.query.get('issue') if self.query else None,
+            seriesyear=self.query.get('year') if self.query else None,
+            booktype=_info.get('booktype'),
+            provider='DDL(GetComics)',
+        )
+        audit_status = 'complete'
+        audit_error = None
+
         try:
             reversed_order = True
             if is_info is not None:
@@ -232,6 +248,7 @@ class GC(object):
                     continue
 
                 logger.fdebug('[DDL-QUERY] Query set to: %s' % queryline)
+                search_audit.record_query(queryline)
 
                 result_generator = self.perform_search_queries(queryline)
                 sfs = search_filer.search_check()
@@ -249,6 +266,7 @@ class GC(object):
             logger.warn(
                 'Timeout occured fetching data from DDL: %s' % e
             )
+            audit_status, audit_error = 'error', 'timeout: %s' % e
             return 'no results'
         except requests.exceptions.ConnectionError as e:
             logger.warn(
@@ -264,6 +282,7 @@ class GC(object):
                 ]
             ):
                 helpers.disable_provider('DDL', 'Connection Refused.')
+            audit_status, audit_error = 'error', 'connection refused: %s' % e
             return 'no results'
         except Exception as err:
             logger.warn(
@@ -304,6 +323,7 @@ class GC(object):
 
             helpers.log_that_exception(except_line)
 
+            audit_status, audit_error = 'error', str(err)
             return 'no results'
         else:
             if mylar.CONFIG.PACK_PRIORITY is True:
@@ -312,6 +332,8 @@ class GC(object):
             else:
                 #logger.fdebug('[PACK_PRIORITY:False] %s' % (sorted(verified_matches, key=itemgetter('pack'), reverse=False)))
                 return sorted(verified_matches, key=itemgetter('pack'), reverse=False)
+        finally:
+            search_audit.finish_run(audit_status, audit_error)
 
     def loadsite(self, id, link):
 
@@ -337,7 +359,19 @@ class GC(object):
     def perform_search_queries(self, queryline):
         next_url = self.url
         seen_urls = set()
+        # A bare-name query on a common title walks dozens of pages of old postings
+        # that the matcher then correctly discards, at ddl_query_delay seconds each.
+        # Cap it; the relevant results are on the first pages. (See FORK.md.)
+        max_pages = mylar.CONFIG.DDL_MAX_PAGES or 0
+        pages_walked = 0
         while next_url is not None:
+            if max_pages and pages_walked >= max_pages:
+                logger.fdebug(
+                    '[DDL-QUERY] Stopping after %s page(s) for "%s" (ddl_max_pages).'
+                    % (pages_walked, queryline)
+                )
+                break
+            pages_walked += 1
             pause_the_search = mylar.CONFIG.DDL_QUERY_DELAY
             diff = mylar.search.check_time(self.provider_stat['lastrun']) # only limit the search queries - the other calls should be direct and not as intensive
             if diff < pause_the_search:
@@ -1181,7 +1215,16 @@ class GC(object):
                 mylar.DDL_QUEUE.put(queue_payload)
             cnt += 1
 
-        return {'success': True, 'site': link_type}
+        # Report what was actually resolved. A GetComics post title can advertise a
+        # range the post does not contain -- "Insexts #1 - 13 (2015-2017)" whose only
+        # file is "Insexts (1-8) (2015-2016)" -- and the caller needs the real name to
+        # avoid marking issues Snatched that nothing in this download can satisfy.
+        return {
+            'success': True,
+            'site': link_type,
+            'resolved_filename': tmp_filename,
+            'resolved_series': x['series'] if isinstance(x, dict) else None,
+        }
 
     def downloadit(self, id, link, mainlink, resume=None, issueid=None, remote_filesize=0, link_type=None):
         #logger.fdebug('[%s] %s -- mainlink: %s' % (id, link, mainlink))
@@ -1404,6 +1447,31 @@ class GC(object):
 
         mylar.DDL_LOCK = False
         return {"success": False, "filename": filename, "path": None}
+
+    def pack_covers_issue(self, resolved_name, issuenumber):
+        """Does the resolved download name actually cover this issue number?
+
+        Returns True/False, or None when the name carries no readable range (in
+        which case the caller should not narrow anything on this basis).
+        """
+        if not resolved_name or issuenumber is None:
+            return None
+        try:
+            want = float(str(issuenumber).strip())
+        except (TypeError, ValueError):
+            return None
+
+        # Strip 4-digit years so "(2015-2016)" is not read as an issue range.
+        cleaned = re.sub(r'((19|20)\d{2}\s*[-\u2013]\s*(19|20)\d{2})', ' ', str(resolved_name))
+        cleaned = re.sub(r'\b(19|20)\d{2}\b', ' ', cleaned)
+
+        ranges = re.findall(r'(\d{1,5})\s*[-\u2013]\s*(\d{1,5})', cleaned)
+        if not ranges:
+            return None
+        for lo, hi in ranges:
+            if float(lo) <= want <= float(hi):
+                return True
+        return False
 
     def check_for_pack(self, title, issue_in_pack=None):
 

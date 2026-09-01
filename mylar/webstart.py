@@ -27,6 +27,17 @@ from mylar.webserve import WebInterface
 from mylar.helpers import create_https_certificates
 from mylar.api import REST
 
+def ui_spa_fallback(status, message, traceback, version):
+    """404 handler for /ui: hand back the SPA shell so React Router can resolve it."""
+    index = os.path.join(mylar.PROG_DIR, 'data', 'ui', 'index.html')
+    if not os.path.isfile(index):
+        return 'The /ui bundle has not been built. Run `npm run build` in ui/.'
+    cherrypy.response.status = 200
+    cherrypy.response.headers['Content-Type'] = 'text/html'
+    with open(index, 'r', encoding='utf-8') as fp:
+        return fp.read()
+
+
 def initialize(options):
 
     # HTTPS stuff stolen from sickbeard
@@ -94,6 +105,12 @@ def initialize(options):
             'tools.staticdir.on': True,
             'tools.staticdir.dir': "js"
         },
+        '/ui': {
+            'tools.staticdir.on': True,
+            'tools.staticdir.dir': "ui",
+            'tools.staticdir.index': "index.html",
+            'error_page.404': ui_spa_fallback
+        },
         '/favicon.ico': {
             'tools.staticfile.on': True,
             'tools.staticfile.filename': os.path.join(mylar.PROG_DIR, 'data', 'images','favicon.ico')
@@ -130,7 +147,7 @@ def initialize(options):
                 'auth.require': []
             })
             # exempt api, login page and static elements from authentication requirements
-            for i in ('/api', '/auth/login', '/css', '/images', '/js', 'favicon.ico'):
+            for i in ('/api', '/auth/login', '/css', '/images', '/js', '/ui', 'favicon.ico'):
                 if i in conf:
                     conf[i].update({'tools.auth.on': False})
                 else:

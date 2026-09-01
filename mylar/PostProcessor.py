@@ -29,6 +29,7 @@ from xml.dom.minidom import parseString
 import mylar
 
 from mylar import logger, db, helpers, updater, notifiers, filechecker, weeklypull, getimage
+from mylar import pp_audit
 
 class PostProcessor(object):
     """
@@ -205,6 +206,18 @@ class PostProcessor(object):
             self._log('Unable to run extra_script: %s' % (script_cmd,))
 
 
+    def _finish_and_return(self):
+        """Flush the post-processing audit, then exit Process() as before.
+
+        Process() has ~30 return points, all of them this queue.put. Wrapping it
+        keeps the audit honest without restructuring the method.
+        """
+        try:
+            pp_audit.finish()
+        except Exception as e:
+            logger.warn('[PP-AUDIT] flush failed: %s' % e)
+        return self.queue.put(self.valreturn)
+
     def duplicate_process(self, dupeinfo):
             #path to move 'should' be the entire path to the given file
             path_to_move = dupeinfo['to_dupe']
@@ -217,6 +230,7 @@ class PostProcessor(object):
                     logger.info('[DUPLICATE-CLEANUP][MOVE-MODE] New File will not be post-processed. Moving duplicate [%s] to Duplicate Dump Folder for manual intervention.' % path_to_move)
                 else:
                     logger.info('[DUPLICATE-CLEANUP][COPY-MODE] NEW File will not be post-processed. Retaining file in original location [%s]' % path_to_move)
+                    pp_audit.record(file_to_move, 'duplicate', 'already in the library; left in place (copy mode)')
                     return True
 
             #this gets tricky depending on if it's the new filename or the existing filename, and whether or not 'copy' or 'move' has been selected.
@@ -238,6 +252,8 @@ class PostProcessor(object):
                     return False
 
                 logger.warn('[DUPLICATE-CLEANUP] Successfully moved %s ... to ... %s' % (path_to_move, os.path.join(dump_folder, file_to_move)))
+                pp_audit.record(file_to_move, 'duplicate',
+                                'already in the library; moved to the duplicate dump')
                 return True
 
     def tidyup(self, odir=None, del_nzbdir=False, sub_path=None, cacheonly=False, filename=None):
@@ -370,6 +386,9 @@ class PostProcessor(object):
 
     def Process(self):
             module = self.module
+            # fork-local: record what post-processing does with this download.
+            # Anchored here rather than in process.py -- this runs on its own thread.
+            pp_audit.start(self.nzb_name, self.nzb_folder, self.comicid, self.issueid)
             self._log('nzb name: %s' % self.nzb_name)
             self._log('nzb folder: %s' % self.nzb_folder)
             logger.fdebug('%s nzb name: %s' % (module, self.nzb_name))
@@ -405,7 +424,7 @@ class PostProcessor(object):
                                         logger.warn('Unable to locate directory within %s location. I have unsucessfully attempted to locate the following paths: %s & %s' % (mylar.CONFIG.SAB_DIRECTORY, tmpchk, tmpchk2))
                                         self.valreturn.append({"self.log": self.log,
                                                                "mode": 'stop'})
-                                        return self.queue.put(self.valreturn)
+                                        return self._finish_and_return()
 
                 if mylar.USE_NZBGET==1:
                     if self.nzb_name != 'Manual Run':
@@ -441,7 +460,7 @@ class PostProcessor(object):
                         logger.warn('There were no files located - check the debugging logs if you think this is in error.')
                         self.valreturn.append({"self.log": self.log,
                                                "mode": 'stop'})
-                        return self.queue.put(self.valreturn)
+                        return self._finish_and_return()
                     logger.info('I have located %s files that I should be able to post-process. Continuing...' % filelist['comiccount'])
                 else:
                     if self.comicid is None and self.issueid is not None and '_' not in str(self.issueid):
@@ -1957,7 +1976,7 @@ class PostProcessor(object):
                                 logger.warn('%s Error trying to validate/create directory. Aborting this process at this time.' % module)
                                 self.valreturn.append({"self.log": self.log,
                                                        "mode": 'stop'})
-                                return self.queue.put(self.valreturn)
+                                return self._finish_and_return()
 
                             #send to renamer here if valid.
                             if mylar.CONFIG.RENAME_FILES:
@@ -2102,7 +2121,7 @@ class PostProcessor(object):
                                 self._log('Unable to locate downloaded file within items I have snatched. Attempting to parse the filename directly and process.')
                                 self.valreturn.append({"self.log": self.log,
                                                        "mode": 'outside'})
-                                return self.queue.put(self.valreturn)
+                                return self._finish_and_return()
                             else:
                                 self._log("I corrected and found the nzb as : %s" % nzbname)
                                 logger.fdebug('%s Auto-corrected and found the nzb as : %s' % (module, nzbname))
@@ -2166,7 +2185,7 @@ class PostProcessor(object):
                                 self._log('Unable to locate issue as previously snatched one-off')
                                 self.valreturn.append({"self.log": self.log,
                                                        "mode": 'stop'})
-                                return self.queue.put(self.valreturn)
+                                return self._finish_and_return()
                             else:
                                 OComicname = oneinfo['ComicName']
                                 OIssue = oneinfo['IssueNumber']
@@ -2227,14 +2246,14 @@ class PostProcessor(object):
                         mylar.APILOCK = False
                     self.valreturn.append({"self.log": self.log,
                                            "mode": 'stop'})
-                    return self.queue.put(self.valreturn)
+                    return self._finish_and_return()
                 #elif len(manual_arclist) > 0: # and len(manual_list) == 0:
                 #    logger.info('%s Manual post-processing completed for %s story-arc issues.' % (module, len(manual_arclist)))
                     #if mylar.APILOCK is True:
                     #    mylar.APILOCK = False
                     #self.valreturn.append({"self.log": self.log,
                     #                       "mode": 'stop'})
-                    #return self.queue.put(self.valreturn)
+                    #return self._finish_and_return()
                 elif len(manual_arclist) > 0:
                     if len(manual_arclist) > 1:
                         logger.info('%s Manual post-processing completed for %s story-arc issues.' % (module, len(manual_arclist)))
@@ -2293,6 +2312,7 @@ class PostProcessor(object):
                     if all([self.comicid is not None, self.issueid is None]):
                         try:
                             logger.info('%s post-processing of pack completed for %s issues of %s (%s).' % (module, i, dspcname, dspcyear))
+                            pp_audit.note_filed(i)
                             global_line = 'Successfully post-processed pack for %s issues of %s (%s)' % (i, dspcname, dspcyear)
                         except Exception:
                             logger.info('%s post-processing of pack completed for %s issues.' % (module, i))
@@ -2339,6 +2359,7 @@ class PostProcessor(object):
                     dspcyear = None
                     if self.comicid is not None:
                         logger.info('%s post-processing of pack completed for %s issues [FAILED: %s]' % (module, i, self.failed_files))
+                        pp_audit.note_filed(i, self.failed_files)
                         global_line = 'Successfully post-processing of pack completed for %s issues [FAILED: %s]' % (i, self.failed_files)
                     else:
                         logger.info('%s Manual post-processing completed for %s issues [FAILED: %s]' % (module, i, self.failed_files))
@@ -2355,7 +2376,7 @@ class PostProcessor(object):
                     mylar.APILOCK = False
                 self.valreturn.append({"self.log": self.log,
                                        "mode": 'stop'})
-                return self.queue.put(self.valreturn)
+                return self._finish_and_return()
             else:
                 pass
 
@@ -2412,7 +2433,7 @@ class PostProcessor(object):
                         self._log('Unable to locate downloaded file within items I have snatched. Attempting to parse the filename directly and process.')
                         self.valreturn.append({"self.log": self.log,
                                                "mode": 'outside'})
-                        return self.queue.put(self.valreturn)
+                        return self._finish_and_return()
                 else:
                     logger.info('%s Successfully located issue as an annual. Continuing.' % module)
                     annchk = "yes"
@@ -2468,7 +2489,7 @@ class PostProcessor(object):
                         self._log('Unable to locate downloaded file to rename. PostProcessing aborted.')
                         self.valreturn.append({"self.log": self.log,
                                                "mode": 'stop'})
-                        return self.queue.put(self.valreturn)
+                        return self._finish_and_return()
 
                     rdorder = None
                     arcdata = None
@@ -2481,7 +2502,7 @@ class PostProcessor(object):
                             self._log('Unable to locate issue within Story Arcs in orde to properly assign metadata. PostProcessing aborted.')
                             self.valreturn.append({"self.log": self.log,
                                                    "mode": 'stop'})
-                            return self.queue.put(self.valreturn)
+                            return self._finish_and_return()
 
                         if arcdata['Publisher'] is None:
                             arcpub = arcdata['IssuePublisher']
@@ -2571,7 +2592,7 @@ class PostProcessor(object):
                         logger.warn('%s Error trying to validate/create directory. Aborting this process at this time.' % module)
                         self.valreturn.append({"self.log": self.log,
                                                "mode": 'stop'})
-                        return self.queue.put(self.valreturn)
+                        return self._finish_and_return()
 
                     #send to renamer here if valid.
                     if mylar.CONFIG.RENAME_FILES:
@@ -2617,7 +2638,7 @@ class PostProcessor(object):
                         self._log("Failed to %s %s: %s" % (mylar.CONFIG.FILE_OPTS, grab_src, e))
                         self.valreturn.append({"self.log": self.log,
                                                "mode": 'stop'})
-                        return self.queue.put(self.valreturn)
+                        return self._finish_and_return()
 
                     #tidyup old path
                     if any([mylar.CONFIG.FILE_OPTS == 'move', mylar.CONFIG.FILE_OPTS == 'copy']):
@@ -2667,7 +2688,7 @@ class PostProcessor(object):
                     self.valreturn.append({"self.log": self.log,
                                                "mode": 'stop'})
 
-                    return self.queue.put(self.valreturn)
+                    return self._finish_and_return()
 
                 else:
                     try:
@@ -2708,12 +2729,12 @@ class PostProcessor(object):
                 logger.info('%s No matches for Manual Run ... exiting.' % module)
                 self.valreturn.append({"self.log": self.log,
                                        "mode": 'stop'})
-                return self.queue.put(self.valreturn)
+                return self._finish_and_return()
             elif len(manual_arclist) > 0 and len(manual_list) == 0:
                 logger.info('%s Manual post-processing completed for %s story-arc issues.' % (module, len(manual_arclist)))
                 self.valreturn.append({"self.log": self.log,
                                        "mode": 'stop'})
-                return self.queue.put(self.valreturn)
+                return self._finish_and_return()
             elif len(manual_arclist) > 0:
                 logger.info('%s Manual post-processing completed for %s story-arc issues.' % (module, len(manual_arclist)))
             i = 0
@@ -2761,7 +2782,7 @@ class PostProcessor(object):
                 logger.info('%s Manual post-processing completed for %s issues [FAILED: %s]' % (module, i, self.failed_files))
             self.valreturn.append({"self.log": self.log,
                                    "mode": 'stop'})
-            return self.queue.put(self.valreturn)
+            return self._finish_and_return()
 
         else:
             comicid = issuenzb['ComicID']
@@ -2781,7 +2802,7 @@ class PostProcessor(object):
                                                    "mode": 'stop',
                                                    "issueid": issueid,
                                                    "comicid": comicid})
-                            return self.queue.put(self.valreturn)
+                            return self._finish_and_return()
 
             if dupthis['action'] == "write" or dupthis['action'] == 'dupe_src':
                 if manual_list is None:
@@ -2794,7 +2815,7 @@ class PostProcessor(object):
                                        "mode": 'stop',
                                        "issueid": issueid,
                                        "comicid": comicid})
-                return self.queue.put(self.valreturn)
+                return self._finish_and_return()
 
 
     def Process_next(self, comicid, issueid, issuenumOG, ml=None, stat=None):
@@ -2922,7 +2943,7 @@ class PostProcessor(object):
                     self.failed_files +=1
                     self.valreturn.append({"self.log": self.log,
                                            "mode": 'stop'})
-                    return self.queue.put(self.valreturn)
+                    return self._finish_and_return()
                 logger.fdebug('%s odir: %s' % (module, odir))
                 logger.fdebug('%s ofilename: %s' % (module, ofilename))
 
@@ -3015,7 +3036,7 @@ class PostProcessor(object):
                                                "comicname":   comicnzb['ComicName'],
                                                "issuenumber": issuenzb['Issue_Number'],
                                                "annchk":      annchk})
-                    return self.queue.put(self.valreturn)
+                    return self._finish_and_return()
                 elif pcheck.startswith('file not found'):
                     filename_in_error = pcheck.split('||')[1]
                     self._log("The file cannot be found in the location provided [%s]. Please verify it exists, and re-run if necessary. Aborting." % filename_in_error)
@@ -3023,7 +3044,7 @@ class PostProcessor(object):
                     self.failed_files +=1
                     self.valreturn.append({"self.log": self.log,
                                            "mode": 'stop'})
-                    return self.queue.put(self.valreturn)
+                    return self._finish_and_return()
 
                 else:
                     #need to set the filename source as the new name of the file returned from comictagger.
@@ -3064,7 +3085,7 @@ class PostProcessor(object):
                     self.failed_files +=1
                     self.valreturn.append({"self.log": self.log,
                                            "mode": 'stop'})
-                    return self.queue.put(self.valreturn)
+                    return self._finish_and_return()
                 logger.fdebug('%s odir: %s' % (module, odir))
                 logger.fdebug('%s ofilename: %s' % (module, ofilename))
                 ext = os.path.splitext(ofilename)[1]
@@ -3075,7 +3096,7 @@ class PostProcessor(object):
                 self.failed_files +=1
                 self.valreturn.append({"self.log": self.log,
                                        "mode": 'stop'})
-                return self.queue.put(self.valreturn)
+                return self._finish_and_return()
 
             self._log('Original Filename: %s [%s]' % (orig_filename, ext))
             logger.fdebug('%s Original Filename: %s [%s]' % (module, orig_filename, ext))
@@ -3119,7 +3140,7 @@ class PostProcessor(object):
                 self.failed_files +=1
                 self.valreturn.append({"self.log": self.log,
                                        "mode": 'stop'})
-                return self.queue.put(self.valreturn)
+                return self._finish_and_return()
 
             if mylar.CONFIG.LOWERCASE_FILENAMES:
                 dst = os.path.join(comlocation, (nfilename + ext).lower())
@@ -3162,7 +3183,7 @@ class PostProcessor(object):
                     logger.error('%s Post-Processing ABORTED' % module)
                     self.valreturn.append({"self.log": self.log,
                                            "mode": 'stop'})
-                    return self.queue.put(self.valreturn)
+                    return self._finish_and_return()
 
                 #tidyup old path
                 if any([mylar.CONFIG.FILE_OPTS == 'move', mylar.CONFIG.FILE_OPTS == 'copy']):
@@ -3196,7 +3217,7 @@ class PostProcessor(object):
                     self.failed_files +=1
                     self.valreturn.append({"self.log": self.log,
                                            "mode": 'stop'})
-                    return self.queue.put(self.valreturn)
+                    return self._finish_and_return()
                 logger.info('%s %s successful to : %s' % (module, mylar.CONFIG.FILE_OPTS, dst))
 
                 if any([mylar.CONFIG.FILE_OPTS == 'move', mylar.CONFIG.FILE_OPTS == 'copy']):
@@ -3284,7 +3305,7 @@ class PostProcessor(object):
                                 logger.warn('%s Error trying to validate/create directory. Aborting this process at this time.' % module)
                                 self.valreturn.append({"self.log": self.log,
                                                        "mode": 'stop'})
-                                return self.queue.put(self.valreturn)
+                                return self._finish_and_return()
 
                             if mylar.CONFIG.READ2FILENAME:
                                 logger.fdebug('%s readingorder#: %s' % (module, arcinfo['ReadingOrder']))
@@ -3368,7 +3389,7 @@ class PostProcessor(object):
             #                           "comicid": comicid})
             #    #if self.apicall is True:
             #    self.sendnotify(series, issueyear, dispiss, annchk, module)
-            #    return self.queue.put(self.valreturn)
+            #    return self._finish_and_return()
 
             # If using Pushover with image enabled, Telegram with image enabled, or Discord, extract the first image in the file for the notification
             if any([all([mylar.CONFIG.PUSHOVER_IMAGE, mylar.CONFIG.PUSHOVER_ENABLED]), all([mylar.CONFIG.TELEGRAM_IMAGE, mylar.CONFIG.TELEGRAM_ENABLED]), mylar.CONFIG.DISCORD_ENABLED, mylar.CONFIG.GOTIFY_ENABLED, mylar.CONFIG.MATTERMOST_ENABLED ]):
@@ -3391,7 +3412,7 @@ class PostProcessor(object):
                                    "issueid": issueid,
                                    "comicid": comicid})
 
-            return self.queue.put(self.valreturn)
+            return self._finish_and_return()
 
 
     def sendnotify(self, series, issueyear, issuenumOG, annchk, module, imageFile, issueid=None):

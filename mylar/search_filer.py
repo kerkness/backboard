@@ -21,13 +21,27 @@ import time
 from wsgiref.handlers import format_date_time
 
 import mylar
-from mylar import logger, filechecker, helpers, search
+from mylar import logger, filechecker, helpers, search, search_audit
 
 
 class search_check(object):
 
     def __init__(self):
-        pass
+        # Set by _reject() so the caller can see why the last entry was dropped.
+        self.reject_reason = None
+        self.reject_detail = None
+
+    def _reject(self, reason, detail=None):
+        """Record why an entry was turned down and return None.
+
+        Every rejection point in _process_entry used to `return None` outright,
+        which left the reason in a debug log line and nowhere else. Routing them
+        through here keeps the return contract identical while making the reason
+        available to search_audit.
+        """
+        self.reject_reason = reason
+        self.reject_detail = detail
+        return None
 
     def _process_entry(self, entry, is_info):
         if is_info:
@@ -116,7 +130,7 @@ class search_check(object):
 
         if ignored:
             logger.fdebug('[IGNORE_SEARCH_WORDS] %s exists within the search result (%s). Ignoring this result.' % (ignored, ComicTitle))
-            return None
+            return self._reject('ignored_word', 'matched ignore-word(s) %s in %s' % (ignored, ComicTitle))
 
         comsize_m = 0
         if nzbprov != "dognzb":
@@ -184,7 +198,7 @@ class search_check(object):
                                 'Failure to meet the Minimum size threshold'
                                 ' - skipping'
                             )
-                            return None
+                            return self._reject('size_below_min', '%s bytes is under the %s minimum' % (comsize_b, conv_minsize))
                     if mylar.CONFIG.USE_MAXSIZE:
                         conv_maxsize = helpers.human2bytes(
                             mylar.CONFIG.MAXSIZE + "M"
@@ -198,13 +212,13 @@ class search_check(object):
                                 'Failure to meet the Maximium size threshold'
                                 ' - skipping'
                             )
-                            return None
+                            return self._reject('size_above_max', '%s bytes is over the %s maximum' % (comsize_b, conv_maxsize))
 
         if mylar.CONFIG.IGNORE_COVERS is True:
             cvrchk = re.sub(r'[\s\s+\_\.]', '', entry['title']).lower()
             if any(['coversonly' in cvrchk, 'coveronly' in cvrchk]):
                 logger.fdebug('Cover(s) only detected. Ignoring result.')
-                return None
+                return self._reject('covers_only', 'title looks like a covers-only posting')
 
         # ---- date constaints.
         # if the posting date is prior to the publication date,
@@ -223,7 +237,7 @@ class search_check(object):
                         'Invalid date found. Unable to continue'
                         ' - skipping result. Error returned: %s' % e
                     )
-                    return None
+                    return self._reject('invalid_date', 'could not parse the issue date: %s' % e)
 
         if UseFuzzy == "1" or nzbprov.lower() == 'airdcpp':
             logger.fdebug(
@@ -242,7 +256,7 @@ class search_check(object):
                         ' probably should refresh the series or wait for CV'
                         ' to correct the data'
                     )
-                    return None
+                    return self._reject('invalid_store_date', 'store date and issue date are both unusable')
                 else:
                     stdate = IssueDate
                 logger.fdebug('issue date used is : %s' % stdate)
@@ -288,7 +302,7 @@ class search_check(object):
                         'Unable to parse posting date from provider result set'
                         ' for : %s. Error returned: %s' % (entry['title'], e)
                     )
-                    return None
+                    return self._reject('unparseable_post_date', 'could not parse the posting date: %s' % e)
 
             if all([digitaldate != '0000-00-00', digitaldate is not None]):
                 i = 0
@@ -377,7 +391,7 @@ class search_check(object):
                         ' as this is not the right issue.'
                         % (pubdate, stdate)
                     )
-                    return None
+                    return self._reject('before_store_date', 'posted %s, before the store date %s' % (pubdate, stdate))
                 else:
                     logger.fdebug(
                         '[CONV] %s is after store date of %s'
@@ -406,7 +420,7 @@ class search_check(object):
                         ' as this is not the right issue.'
                         % (pubdate, stdate)
                     )
-                    return None
+                    return self._reject('before_store_date', 'posted %s, before the store date %s' % (pubdate, stdate))
                 else:
                     logger.fdebug(
                         '[INT] %s is after store date of %s' % (pubdate, stdate)
@@ -486,7 +500,7 @@ class search_check(object):
                 filecomic = fcomic.matchIT(parsed_comic)
             except Exception as e:
                 logger.error('[PARSE-ERROR]: %s' % e)
-                return None
+                return self._reject('parse_error', 'filename parser raised: %s' % e)
             else:
                 logger.fdebug('match_check: %s' % filecomic)
                 if filecomic['process_status'] == 'fail':
@@ -494,7 +508,7 @@ class search_check(object):
                         '%s was not a match to %s (%s)'
                         % (cleantitle, ComicName, SeriesYear)
                     )
-                    return None
+                    return self._reject('series_name_mismatch', '%s is not a match for %s (%s)' % (cleantitle, ComicName, SeriesYear))
                 elif filecomic['process_status'] == 'alt_match':
                     # if it's an alternate series match, we'll retain each value
                     # until the search has compeletely run, compiling matches.
@@ -514,13 +528,13 @@ class search_check(object):
                 'Booktypes do not match. Looking for %s, this is a %s.'
                 ' Ignoring this result.' % (booktype, parsed_comic['booktype'])
             )
-            return None
+            return self._reject('booktype_mismatch', 'looking for %s, this result is a %s' % (booktype, parsed_comic['booktype']))
         else:
             logger.fdebug(
                 'Unable to parse name properly: %s. Ignoring this result'
                 % parsed_comic
             )
-            return None
+            return self._reject('unparseable_title', 'could not parse the title into series/issue')
 
         # adjust for covers only by removing them entirely...
         vers4year = "no"
@@ -683,7 +697,7 @@ class search_check(object):
             yearmatch = True
 
         if yearmatch is False and pack is False:
-            return None
+            return self._reject('year_mismatch', 'series year did not match and this is not a pack')
 
         annualize = False
         if 'annual' in ComicName.lower():
@@ -808,7 +822,7 @@ class search_check(object):
                     )
                 else:
                     logger.fdebug("Versions wrong. Ignoring possible match.")
-                    return None
+                    return self._reject('version_mismatch', 'volume/version on the result does not match')
 
         downloadit = False
 
@@ -837,13 +851,13 @@ class search_check(object):
                             'Issue Number %s does NOT exist within this pack.'
                             ' Skipping' % IssueNumber
                         )
-                        return None
+                        return self._reject('issue_not_in_pack', 'issue %s is not inside this pack' % IssueNumber)
             except Exception as e:
                 logger.error(
                     'Unable to identify pack range for %s. Error returned: %s'
                     % (entry['title'], e)
                 )
-                return None
+                return self._reject('pack_range_error', 'could not read the pack range: %s' % e)
             # pack support.
             nowrite = False
             if 'DDL' in nzbprov:
@@ -1130,7 +1144,7 @@ class search_check(object):
                     #log2file = log2file + "issues don't match.." + "\n"
                     downloadit = False
                     #foundc['status'] = False
-        return None
+        return self._reject('issue_number_mismatch', 'no issue number on this result matched what was wanted')
 
     def checker(self, entries, is_info=None):
         mylar.COMICINFO = []
@@ -1138,10 +1152,17 @@ class search_check(object):
 
         #logger.fdebug('entries: %s' % (entries,))
         for entry in entries:
+            seq = search_audit.record_candidate(entry)
+            self.reject_reason = None
             maybe_value = self._process_entry(entry, is_info)
             if maybe_value is not None:
+                search_audit.record_verdict(seq, 'accepted')
                 mylar.COMICINFO.append(maybe_value)
                 hold_the_matches.append(maybe_value)
+            else:
+                search_audit.record_verdict(
+                    seq, 'rejected', self.reject_reason, self.reject_detail
+                )
 
         #logger.fdebug('returning hold_the_matches: %s' % (hold_the_matches,))
         return hold_the_matches
@@ -1149,9 +1170,16 @@ class search_check(object):
     def check_for_first_result(self, entries, is_info, prefer_pack=False):
         candidate = None
         for entry in entries:
+            seq = search_audit.record_candidate(entry)
+            self.reject_reason = None
             maybe_value = self._process_entry(entry, is_info)
             #logger.fdebug('maybe_value: %s' % maybe_value)
-            if maybe_value is not None:
+            if maybe_value is None:
+                search_audit.record_verdict(
+                    seq, 'rejected', self.reject_reason, self.reject_detail
+                )
+            else:
+                search_audit.record_verdict(seq, 'accepted')
                 # If we have a value which matches our pack/not-pack
                 # preference, return it: otherwise, store it for return if we
                 # don't find a better candidate

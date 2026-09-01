@@ -3178,6 +3178,32 @@ def searcher(
             ddl_it = ggc.parse_downloadresults(nzbid, link, comicinfo, pack_info)
             tnzbprov = nzbprov
             if ddl_it['success'] is True:
+                # fork-local: a post title can advertise a range the post does not
+                # contain. Marking those issues Snatched strands them permanently,
+                # because nothing in this download can ever satisfy them. Trust the
+                # resolved filename over the advertised range. (See FORK.md.)
+                try:
+                    resolved = ddl_it.get('resolved_filename') or ddl_it.get('resolved_series')
+                    issinfo = comicinfo[0].get('pack_issuelist')
+                    if all([resolved, comicinfo[0].get('pack'), issinfo, issinfo.get('issues')]):
+                        keep, dropped = [], []
+                        for iss in issinfo['issues']:
+                            covered = ggc.pack_covers_issue(resolved, iss.get('issuenumber'))
+                            # None means the name carries no readable range; keep it
+                            # rather than narrowing on no evidence.
+                            (dropped if covered is False else keep).append(iss)
+                        if dropped:
+                            logger.warn(
+                                '[PACK-RANGE] %s advertised issue(s) %s, but the file'
+                                ' resolved to "%s" which does not contain them. Not'
+                                ' marking them as snatched.'
+                                % (nzbname,
+                                   ', '.join(str(d.get('issuenumber')) for d in dropped),
+                                   resolved)
+                            )
+                            comicinfo[0]['pack_issuelist']['issues'] = keep
+                except Exception as e:
+                    logger.warn('[PACK-RANGE] unable to verify pack range: %s' % e)
                 logger.info(
                     '[%s] Successfully snatched %s from DDL site. It is currently being queued'
                     ' to download in position %s' % (tnzbprov, nzbname, mylar.DDL_QUEUE.qsize())

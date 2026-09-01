@@ -7,7 +7,7 @@ import time
 
 import mylar
 from .. import logger, helpers
-from mylar import db, getcomics
+from mylar import db, getcomics, candidate_actions
 from mylar.downloaders import mediafire, mega, pixeldrain
 
 
@@ -128,7 +128,23 @@ def ddl_downloader(queue):
                             'updated_date': tdnow.strftime('%Y-%m-%d %H:%M')}
                     myDB.upsert('ddl_info', nval, ctrlval)
 
-                if all([ddzstat['success'] is True, mylar.CONFIG.POST_PROCESSING is True]):
+                # fork-local: a user-chosen candidate bypasses the matcher, so it is
+                # staged for manual review instead of being post-processed into the
+                # library. See mylar/candidate_actions.py.
+                staged = False
+                if ddzstat['success'] is True:
+                    try:
+                        staged = candidate_actions.stage(item, ddzstat)
+                    except Exception as e:
+                        logger.warn('[CANDIDATE] staging error: %s' % e)
+                    if staged:
+                        try:
+                            mylar.DDL_QUEUED.remove(item['id'])
+                        except ValueError:
+                            pass
+                        ddl_cleanup(item['id'])
+
+                if all([staged is False, ddzstat['success'] is True, mylar.CONFIG.POST_PROCESSING is True]):
                     try:
                         if ddzstat['filename'] is None:
                             logger.info('%s successfully downloaded - now initiating post-processing for %s.' % (os.path.basename(ddzstat['path']), ddzstat['path']))

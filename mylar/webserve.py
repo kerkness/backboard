@@ -7542,7 +7542,7 @@ class WebInterface(object):
             r = requests.get(querysab, params=payload, verify=verify, timeout=(5, 20))
         except Exception as e:
             logger.warn('Error fetching data from %s: %s' % (querysab, e))
-            if requests.exceptions.SSLError:
+            if isinstance(e, requests.exceptions.SSLError):
                 logger.warn('Cannot verify ssl certificate. Attempting to authenticate with no ssl-certificate verification.')
                 try:
                     from requests.packages.urllib3 import disable_warnings
@@ -7553,14 +7553,14 @@ class WebInterface(object):
                 verify = False
 
                 try:
-                    v = requests.get(querysab, params={'mode': 'version'}, verify=verify)
+                    v = requests.get(querysab, params={'mode': 'version'}, verify=verify, timeout=(5, 20))
                     if str(v.status_code) == '200':
                         try:
                             version = v.json()['version']
                         except Exception as e:
                             version = v.text.strip()
                         logger.fdebug('sabnzbd version: %s' % version)
-                    r = requests.get(querysab, params=payload, verify=verify)
+                    r = requests.get(querysab, params=payload, verify=verify, timeout=(5, 20))
                 except Exception as e:
                     logger.warn('Error fetching data from %s: %s' % (sabhost, e))
                     return json.dumps({"status": False, "message": "Unable to retrieve data from SABnzbd.", "version": str(version)})
@@ -7629,7 +7629,7 @@ class WebInterface(object):
             r = session.get(query_url, headers=headers, verify=verify, timeout=30)
         except Exception as e:
             logger.warn('Error fetching data from %s: %s' % (query_url, e))
-            if requests.exceptions.SSLError:
+            if isinstance(e, requests.exceptions.SSLError):
                 logger.warn(
                     'Cannot verify ssl certificate. Attempting to authenticate with no ssl-certificate verification.')
                 try:

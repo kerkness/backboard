@@ -864,6 +864,25 @@ def dbcheck():
     c.execute('CREATE TABLE IF NOT EXISTS oneoffhistory (ComicName TEXT, IssueNumber TEXT, ComicID TEXT, IssueID TEXT, Status TEXT, weeknumber TEXT, year TEXT)')
     c.execute('CREATE TABLE IF NOT EXISTS jobhistory (JobName TEXT, prev_run_datetime timestamp, prev_run_timestamp REAL, next_run_datetime timestamp, next_run_timestamp REAL, last_run_completed TEXT, successful_completions TEXT, failed_completions TEXT, status TEXT, last_date timestamp)')
     c.execute('CREATE TABLE IF NOT EXISTS manualresults (provider TEXT, id TEXT, kind TEXT, comicname TEXT, volume TEXT, oneoff TEXT, fullprov TEXT, issuenumber TEXT, modcomicname TEXT, name TEXT, link TEXT, size TEXT, pack_numbers TEXT, pack_issuelist TEXT, comicyear TEXT, issuedate TEXT, tmpprov TEXT, pack TEXT, issueid TEXT, comicid TEXT, sarc TEXT, issuearcid TEXT)')
+
+    # -- fork-local: search audit (see mylar/search_audit.py and FORK.md) --
+    c.execute('CREATE TABLE IF NOT EXISTS search_runs (run_id TEXT UNIQUE, comicid TEXT, issueid TEXT, comicname TEXT, issuenumber TEXT, seriesyear TEXT, booktype TEXT, provider TEXT, started REAL, finished REAL, status TEXT, queries TEXT, candidate_count INTEGER, accepted_count INTEGER, error TEXT)')
+    c.execute('CREATE TABLE IF NOT EXISTS search_candidates (run_id TEXT, seq INTEGER, queryline TEXT, title TEXT, link TEXT, size TEXT, year TEXT, issues TEXT, pack INTEGER, verdict TEXT, reason TEXT, detail TEXT)')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_search_runs_issue ON search_runs (issueid, started)')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_search_runs_comic ON search_runs (comicid, started)')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_search_candidates_run ON search_candidates (run_id, seq)')
+
+    c.execute('CREATE TABLE IF NOT EXISTS pp_runs (pp_id TEXT UNIQUE, ddl_id TEXT, ddl_series TEXT, ddl_issues TEXT, nzb_name TEXT, nzb_folder TEXT, comicid TEXT, issueid TEXT, started REAL, finished REAL, status TEXT, files_total INTEGER, filed_count INTEGER, duplicate_count INTEGER, failed_count INTEGER)')
+    c.execute('CREATE TABLE IF NOT EXISTS pp_files (pp_id TEXT, seq INTEGER, filename TEXT, outcome TEXT, detail TEXT, issuenumber TEXT)')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_pp_runs_started ON pp_runs (started)')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_pp_files_run ON pp_files (pp_id, seq)')
+
+    # Action state a user has taken on a candidate, added after the tables shipped.
+    for _col, _type in (('action', 'TEXT'), ('action_detail', 'TEXT'), ('ddl_id', 'TEXT')):
+        try:
+            c.execute('SELECT %s from search_candidates' % _col)
+        except sqlite3.OperationalError:
+            c.execute('ALTER TABLE search_candidates ADD COLUMN %s %s' % (_col, _type))
     c.execute('CREATE TABLE IF NOT EXISTS storyarcs(StoryArcID TEXT, ComicName TEXT, IssueNumber TEXT, SeriesYear TEXT, IssueYEAR TEXT, StoryArc TEXT, TotalIssues TEXT, Status TEXT, inCacheDir TEXT, Location TEXT, IssueArcID TEXT, ReadingOrder INT, IssueID TEXT, ComicID TEXT, ReleaseDate TEXT, IssueDate TEXT, Publisher TEXT, IssuePublisher TEXT, IssueName TEXT, CV_ArcID TEXT, Int_IssueNumber INT, DynamicComicName TEXT, Volume TEXT, Manual TEXT, DateAdded TEXT, DigitalDate TEXT, Type TEXT, Aliases TEXT, ArcImage TEXT)')
     c.execute('CREATE TABLE IF NOT EXISTS ddl_info (ID TEXT UNIQUE, series TEXT, year TEXT, filename TEXT, size TEXT, issueid TEXT, comicid TEXT, link TEXT, status TEXT, remote_filesize TEXT, updated_date TEXT, mainlink TEXT, issues TEXT, site TEXT, submit_date TEXT, pack INTEGER, link_type TEXT, tmp_filename TEXT, jd2_job_id TEXT)')
     c.execute('CREATE TABLE IF NOT EXISTS exceptions_log(date TEXT UNIQUE, comicname TEXT, issuenumber TEXT, seriesyear TEXT, issueid TEXT, comicid TEXT, booktype TEXT, searchmode TEXT, error TEXT, error_text TEXT, filename TEXT, line_num TEXT, func_name TEXT, traceback TEXT)')

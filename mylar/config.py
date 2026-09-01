@@ -370,6 +370,13 @@ _CONFIG_DEFINITIONS = OrderedDict({
     'PACK_PRIORITY': (bool, 'DDL', False),
     'DDL_QUERY_DELAY': (int, 'DDL', 15),
     'DDL_LOCATION': (str, 'DDL', None),
+    # fork-local: cap how many result pages a single query will walk. A bare-name
+    # query on a common title ("Thor") returns hundreds of old postings that are then
+    # all correctly rejected -- minutes of wall-clock per search at ddl_query_delay.
+    'DDL_MAX_PAGES': (int, 'DDL', 3),
+    # fork-local: staging area for user-chosen candidate downloads (see FORK.md).
+    # Deliberately not auto-processed -- these bypass the matcher.
+    'CANDIDATE_FOLDER': (str, 'DDL', None),
     'DDL_AUTORESUME': (bool, 'DDL', True),
     'DDL_PREFER_UPSCALED': (bool, 'DDL', True),
     'DDL_PRIORITY_ORDER': (str, 'DDL', []),

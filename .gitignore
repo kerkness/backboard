@@ -39,3 +39,11 @@ migration-backup-*/
 *.bak-*
 *.deb
 .ddl_healthcheck.state
+
+# --- kerkness fork: new UI ---
+.env
+ui/node_modules/
+ui/dist/
+# Build output served at /ui. Not committed while the UI is in flux; revisit
+# before shipping, since the fork is meant to carry its own built UI.
+data/ui/
