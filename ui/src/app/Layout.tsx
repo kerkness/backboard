@@ -27,7 +27,7 @@ import MenuIcon from '@mui/icons-material/Menu'
 import SearchIcon from '@mui/icons-material/Search'
 import { EventBridge } from './EventBridge'
 
-const REPO = 'https://github.com/kerkness/mylar3'
+const REPO = 'https://github.com/kerkness/backboard'
 
 const NAV = [
   { label: 'Series', to: '/series' },
@@ -261,7 +261,7 @@ export function Layout() {
           sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.5 }}
         >
           <GitHubIcon sx={{ fontSize: 15 }} />
-          kerkness/mylar3
+          kerkness/backboard
         </Link>
 
         <Link component={RouterLink} to="/about" variant="caption" underline="hover">

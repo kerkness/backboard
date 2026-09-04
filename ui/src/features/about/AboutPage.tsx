@@ -15,7 +15,7 @@ const UPSTREAM = 'https://github.com/MylarComics/mylar3'
 const UPSTREAM_DOCS = 'https://mylar.nerdfirehurricane.com/'
 const UPSTREAM_DISCORD = 'https://discord.gg/6qpyCZRZRB'
 const UPSTREAM_CONTRIB = 'https://mylar.nerdfirehurricane.com/docs/contributing'
-const FORK = 'https://github.com/kerkness/mylar3'
+const FORK = 'https://github.com/kerkness/backboard'
 
 function Out({ href, children }: { href: string; children: React.ReactNode }) {
   const external = !href.startsWith('/')
@@ -155,7 +155,7 @@ export function AboutPage() {
           <Section title="Reporting problems">
             <Alert severity="info" variant="outlined">
               Anything wrong with <strong>this</strong> UI is this fork's doing, not Mylar3's.
-              Please report it at <Out href={`${FORK}/issues`}>kerkness/mylar3</Out>, not on the
+              Please report it at <Out href={`${FORK}/issues`}>kerkness/backboard</Out>, not on the
               Mylar3 issue tracker or their Discord. Bugs that are not specific to this fork are
               worth reporting upstream, where they help everyone.
             </Alert>

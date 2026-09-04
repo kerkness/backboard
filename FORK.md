@@ -1,4 +1,4 @@
-# kerkness/mylar3 — fork notes
+# kerkness/backboard — fork notes
 
 A **soft fork** of [MylarComics/mylar3](https://github.com/MylarComics/mylar3). The engine
 keeps tracking upstream; local changes stay small and documented so merges stay cheap.
@@ -103,7 +103,7 @@ judgement ever changes.
 
 ```
 mylarcomics   https://github.com/MylarComics/mylar3.git   # upstream, fetch only
-fork          git@github.com:kerkness/mylar3.git          # this fork
+fork          git@github.com:kerkness/backboard.git       # this fork
 origin        https://github.com/mylar3/mylar3.git        # original, effectively dead
                                                           # (master last moved Aug 2025)
 ```

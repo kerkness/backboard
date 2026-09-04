@@ -12,7 +12,7 @@ there for everything this one doesn't cover.
 
 > **Not affiliated with or endorsed by the Mylar3 project.** If something in this UI is
 > broken, that is this fork's doing. Please report it
-> [here](https://github.com/kerkness/mylar3/issues), **not** on the Mylar3 issue tracker or
+> [here](https://github.com/kerkness/backboard/issues), **not** on the Mylar3 issue tracker or
 > their Discord.
 
 ---
@@ -67,22 +67,29 @@ UI decisions are recorded in [DESIGN.md](DESIGN.md).
 
 ## Installing
 
-Same as Mylar3. This fork runs the same way:
+Mylar itself runs exactly as upstream does. The UI is a build artifact that is **not**
+committed, so it has to be built once before Mylar can serve it. That needs Node.
 
 ```bash
-git clone https://github.com/kerkness/mylar3.git
-cd mylar3
+git clone https://github.com/kerkness/backboard.git
+cd backboard
+
+# build the UI into data/ui, where Mylar serves it from
+cd ui && npm install && npm run build && cd ..
+
 python3 Mylar.py
 ```
 
-The UI is served at `http://<host>:<port>/ui`. Mylar's own interface stays at
+The UI is then served at `http://<host>:<port>/ui`. Mylar's own interface stays at
 `http://<host>:<port>/home`, and **settings are only available there currently**.
 
-The UI is a build artifact committed to `data/ui`. To work on it:
+Skip the build step and `/ui` will 404, since `data/ui` is gitignored and empty on a fresh
+clone. Rebuild after pulling any change under `ui/`.
+
+To work on the UI:
 
 ```bash
 cd ui
-npm install
 npm run dev     # dev server, proxies /api to a running Mylar
 npm run build   # writes to ../data/ui, which Mylar serves
 ```
