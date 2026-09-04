@@ -4,7 +4,7 @@ import time
 
 import mylar
 from .. import logger
-from mylar import process
+from mylar import process, manual_match
 
 
 def postprocess_main(queue):
@@ -19,6 +19,15 @@ def postprocess_main(queue):
             if item == 'exit':
                 logger.info('Cleaning up workers for shutdown')
                 break
+
+            # fork-local: a user-asserted match skips the matcher, not the queue.
+            if item.get('manual_match'):
+                try:
+                    manual_match.run(item['path'], item['issueid'], item['comicid'])
+                except Exception as e:
+                    logger.warn('[MANUAL-MATCH] %s' % e)
+                mylar.APILOCK = False
+                continue
 
             if mylar.APILOCK is False:
                 try:

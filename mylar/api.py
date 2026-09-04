@@ -15,7 +15,7 @@
 #  along with Mylar.  If not, see <http://www.gnu.org/licenses/>.
 
 import mylar
-from mylar import db, mb, importer, search, process, versioncheck, logger, webserve, helpers, encrypted, series_metadata, candidate_actions
+from mylar import db, mb, importer, search, process, versioncheck, logger, webserve, helpers, encrypted, series_metadata, candidate_actions, getimage, pullcovers
 import threading
 import json
 import cherrypy
@@ -23,6 +23,8 @@ import time
 import random
 import os
 import re
+import hashlib
+import io
 import shutil
 import queue
 import urllib.request, urllib.error, urllib.parse
@@ -45,7 +47,9 @@ cmd_list = ['getIndex', 'getComic', 'getUpcoming', 'getWanted', 'getHistory',
             'getWeeklyPull', 'searchIssue', 'searchSeries', 'getSearchRuns',
             'getActivity', 'downloadCandidate', 'ignoreCandidate',
             'lookupCandidate', 'getDownloads', 'getStagedFiles',
-            'matchStagedFile', 'deleteStagedFile']
+            'matchStagedFile', 'deleteStagedFile', 'getSeriesFiles',
+            'getFileCover', 'getPullCover', 'prefetchPullCovers',
+            'prefetchIssueCovers']
 
 class Api(object):
 
@@ -461,6 +465,64 @@ class Api(object):
             'year': year,
             'issues': self._resultsFromQuery(query, [week, year])
         })
+        return
+
+    def _prefetchPullCovers(self, **kwargs):
+        """Warm the cover cache for a week in the background.
+
+        Cheap to call on every view of the pull list: it only looks at rows with
+        no cover yet, and a fully-cached week makes no ComicVine call at all.
+        """
+        try:
+            week, year = self._weekOf(kwargs.get('week'), kwargs.get('year'))
+        except (TypeError, ValueError):
+            self.data = self._failureResponse('week and year must be numeric')
+            return
+
+        self.data = self._successResponse(pullcovers.prefetch_week(week, year))
+        return
+
+    def _prefetchIssueCovers(self, **kwargs):
+        """Warm the cover cache for every issue of one series.
+
+        Costs no ComicVine call: issues.ImageURL is already stored for watched
+        series, so this only downloads from CV's CDN. Covers are served by
+        getPullCover, which is keyed by IssueID and so needs no change.
+        """
+        comicid = kwargs.get('comicid') or kwargs.get('id') or None
+        if not comicid:
+            self.data = self._failureResponse('Missing parameter: comicid')
+            return
+
+        self.data = self._successResponse(pullcovers.prefetch_series(comicid))
+        return
+
+    def _getPullCover(self, **kwargs):
+        """Cover art for one pull-list row, from cache only.
+
+        Deliberately never fetches: this is hit once per visible row, and each
+        CV call blocks on a >=2s throttle. _prefetchPullCovers does the fetching.
+        A miss is a 'not found' so the UI can fall back to a placeholder.
+        """
+        issueid = kwargs.get('issueid') or None
+        comicid = kwargs.get('comicid') or None
+        if not issueid and not comicid:
+            self.data = self._failureResponse('Missing parameter: issueid or comicid')
+            return
+
+        size = kwargs.get('size') or 'thumb'
+        if size not in pullcovers.SIZES:
+            self.data = self._failureResponse(
+                'size must be one of: %s' % ', '.join(sorted(pullcovers.SIZES))
+            )
+            return
+
+        cover = pullcovers.cached_cover(issueid=issueid, comicid=comicid, size=size)
+        if cover is None:
+            self.data = self._failureResponse('No cover cached for that release.')
+            return
+
+        self.img = cover
         return
 
     def _getWanted(self, **kwargs):
@@ -1261,6 +1323,14 @@ class Api(object):
             self.data = self._failureResponse('ComicVine lookup failed: %s' % e)
             return
 
+        # Pull the cover art off CV's CDN in the background so the picker can serve
+        # it from our own cache. The search already returned each image URL, so
+        # this costs no additional ComicVine API call.
+        try:
+            pullcovers.prefetch_results(results)
+        except Exception as e:
+            logger.fdebug('[API] could not queue lookup covers: %s' % e)
+
         self.data = self._successResponse({'query': cleaned, 'results': results})
         return
 
@@ -1443,23 +1513,29 @@ class Api(object):
         folder = path if os.path.isdir(path) else os.path.dirname(path)
         name = os.path.basename(path)
 
-        # Keywords deliberately: _issueProcess passes these positionally and lands
-        # issueid in the `failed` slot.
-        pp = process.Process(
-            nzb_name=name,
-            nzb_folder=folder,
-            issueid=issue['IssueID'],
-            comicid=issue['ComicID'],
-            apicall=True,
-        )
-        threading.Thread(
-            target=pp.post_process, name='MANUAL-MATCH'
-        ).start()
+        # Go through PP_QUEUE rather than calling post_process() directly: the queue
+        # is what honours mylar.APILOCK, so concurrent matches serialise instead of
+        # racing each other (four at once is the normal case for a pack).
+        mylar.PP_QUEUE.put({
+            # manual_match skips PostProcessor.Process()'s identity re-derivation,
+            # which otherwise vetoes a file whose name disagrees with ComicVine.
+            'manual_match': True,
+            'path': path,
+            'nzb_name': name,
+            'nzb_folder': folder,
+            'failed': False,
+            'issueid': issue['IssueID'],
+            'comicid': issue['ComicID'],
+            'apicall': True,
+            'ddl': True,
+            'download_info': None,
+        })
 
         self.data = self._successResponse({
-            'message': 'Matching "%s" to issue #%s — post-processing started.'
+            'message': 'Queued "%s" to be matched to issue #%s.'
                        % (name, issue['Issue_Number']),
             'issueid': issue['IssueID'],
+            'queued': mylar.PP_QUEUE.qsize(),
         })
         return
 
@@ -1481,6 +1557,182 @@ class Api(object):
             self.data = self._failureResponse('Could not delete: %s' % e)
             return
         self.data = self._successResponse({'deleted': path})
+        return
+
+    @staticmethod
+    def _normName(value):
+        return re.sub(r'[^a-z0-9]', '', (value or '').lower())
+
+    def _parseIssueNumber(self, filename, seriesname):
+        """Best-effort issue number from a comic filename, given its series.
+
+        Returns None for pack ranges ("001-004") and when nothing readable is
+        found -- callers must treat None as "no suggestion", not as issue 0.
+        """
+        base = os.path.splitext(os.path.basename(filename or ''))[0]
+        # Drop bracketed noise: (2006), (digital-Empire), [DC], [__174634__]
+        cleaned = re.sub(r'\(.*?\)|\[.*?\]', ' ', base)
+
+        ns = self._normName(seriesname)
+        if ns:
+            tokens, out, buf = re.split(r'(\W+)', cleaned), [], ''
+            for t in tokens:
+                if self._normName(buf + t) and ns.startswith(self._normName(buf + t)):
+                    buf += t
+                    if self._normName(buf) == ns:
+                        buf = ''
+                    continue
+                if buf:
+                    out.append(buf)
+                    buf = ''
+                out.append(t)
+            cleaned = ''.join(out)
+
+        # "v1" / "Vol 2" are volume markers, not issue numbers.
+        cleaned = re.sub(r'\bv(?:ol)?\.?\s*\d+', ' ', cleaned, flags=re.I)
+        # A range means a pack, not a single issue.
+        if re.search(r'\d+\s*-\s*\d+', cleaned):
+            return None
+        for m in re.finditer(r'#?\s*(\d{1,4})(?:\.(\d+))?', cleaned):
+            if re.match(r'^(19|20)\d{2}$', m.group(1)):
+                continue
+            return float('%s.%s' % (m.group(1), m.group(2))) if m.group(2) else float(m.group(1))
+        return None
+
+    def _getSeriesFiles(self, **kwargs):
+        """Everything on disk that might belong to one series, with suggestions.
+
+        Answers "this issue says Snatched but never arrived -- where is the file?"
+        by pairing files found under the staging/DDL roots with the issues they
+        look like they satisfy.
+        """
+        if 'id' not in kwargs:
+            self.data = self._failureResponse('Missing parameter: id')
+            return
+
+        myDB = db.DBConnection()
+        comic = myDB.selectone(
+            'SELECT ComicID, ComicName FROM comics WHERE ComicID=?', [kwargs['id']]
+        ).fetchone()
+        if comic is None:
+            self.data = self._failureResponse('No such series: %s' % kwargs['id'])
+            return
+
+        issues = self._resultsFromQuery(
+            'SELECT IssueID AS id, Issue_Number AS number, IssueName AS name,'
+            ' Status AS status FROM issues WHERE ComicID=? ORDER BY Int_IssueNumber',
+            [kwargs['id']]
+        )
+        by_number = {}
+        for i in issues:
+            try:
+                by_number[float(str(i['number']).strip())] = i
+            except (TypeError, ValueError):
+                continue
+
+        downloads = self._resultsFromQuery(
+            'SELECT ID AS id, series, filename, size, status, link_type, pack,'
+            ' issues, updated_date FROM ddl_info WHERE comicid=?'
+            ' ORDER BY updated_date DESC', [kwargs['id']]
+        )
+
+        # Walk the roots looking for files whose name resembles this series.
+        target = self._normName(comic['ComicName'])
+        found = []
+        for root in self._stagingRoots():
+            for dirpath, _dirs, filenames in os.walk(root):
+                for fn in filenames:
+                    if not fn.lower().endswith(('.cbr', '.cbz', '.pdf', '.cb7')):
+                        continue
+                    haystack = self._normName(os.path.join(os.path.basename(dirpath), fn))
+                    if target and target not in haystack:
+                        continue
+                    full = os.path.join(dirpath, fn)
+                    number = self._parseIssueNumber(fn, comic['ComicName'])
+                    suggestion = by_number.get(number) if number is not None else None
+                    try:
+                        size = os.path.getsize(full)
+                    except OSError:
+                        size = 0
+                    found.append({
+                        'name': fn,
+                        'path': full,
+                        'size': size,
+                        'issue_number': number,
+                        'suggested_issueid': suggestion['id'] if suggestion else None,
+                        'suggested_status': suggestion['status'] if suggestion else None,
+                    })
+                if len(found) > 300:
+                    break
+
+        found.sort(key=lambda f: (f['issue_number'] is None, f['issue_number'] or 0))
+        self.data = self._successResponse({
+            'comicid': comic['ComicID'],
+            'comicname': comic['ComicName'],
+            'issues': issues,
+            'downloads': downloads,
+            'files': found,
+        })
+        return
+
+    def _getFileCover(self, **kwargs):
+        """First page of a staged comic archive, as a cached thumbnail.
+
+        Reuses getimage.open_archive (which also handles a zip mis-named .cbr) but
+        not extract_image, since that writes to a single fixed temp path and would
+        collide across concurrent thumbnail requests.
+        """
+        path = self._safeStagedPath(kwargs.get('path'))
+        if path is None or not os.path.isfile(path):
+            self.data = self._failureResponse('No such staged file.')
+            return
+
+        try:
+            stamp = '%s|%s|%s' % (path, os.path.getmtime(path), os.path.getsize(path))
+        except OSError as e:
+            self.data = self._failureResponse('Cannot read that file: %s' % e)
+            return
+
+        cache_dir = os.path.join(mylar.CONFIG.CACHE_DIR, 'file_covers')
+        cover = os.path.join(
+            cache_dir, hashlib.sha1(stamp.encode('utf-8')).hexdigest() + '.jpg'
+        )
+        if os.path.isfile(cover):
+            self.img = cover
+            return
+
+        archive = None
+        try:
+            os.makedirs(cache_dir, exist_ok=True)
+            opened = getimage.open_archive(path)
+            # open_archive falls through to None on an unreadable archive.
+            archive = opened[0] if opened else None
+            if archive is None:
+                self.data = self._failureResponse('Could not read that archive.')
+                return
+
+            pages = getimage.comic_pages(archive)
+            if not pages:
+                self.data = self._failureResponse('No images inside that archive.')
+                return
+
+            img = Image.open(io.BytesIO(archive.read(pages[0])))
+            img.thumbnail((320, 480), Image.LANCZOS)
+            if img.mode not in ('RGB', 'L'):
+                img = img.convert('RGB')
+            img.save(cover, 'JPEG', quality=80)
+        except Exception as e:
+            logger.warn('[FILE-COVER] %s: %s' % (os.path.basename(path), e))
+            self.data = self._failureResponse('Could not extract a cover: %s' % e)
+            return
+        finally:
+            try:
+                if archive is not None:
+                    archive.close()
+            except Exception:
+                pass
+
+        self.img = cover
         return
 
     def _issueProcess(self, **kwargs):
@@ -1507,16 +1759,20 @@ class Api(object):
         # landed in nzb_name and issueid in `failed`. A string `failed` matches
         # neither `is False` nor `is True` in post_process(), so the call did
         # nothing at all -- no post-processing, no failure handling. (See FORK.md.)
-        fp = process.Process(
-            nzb_name=os.path.basename(os.path.normpath(self.folder)) or 'Manual Run',
-            nzb_folder=self.folder,
-            issueid=self.issueid,
-            comicid=self.comicid,
-            apicall=True,
-        )
-        fp.post_process()
+        # Queued rather than called directly, for the same reason as matchStagedFile:
+        # PP_QUEUE is what honours mylar.APILOCK.
+        mylar.PP_QUEUE.put({
+            'nzb_name': os.path.basename(os.path.normpath(self.folder)) or 'Manual Run',
+            'nzb_folder': self.folder,
+            'failed': False,
+            'issueid': self.issueid,
+            'comicid': self.comicid,
+            'apicall': True,
+            'ddl': True,
+            'download_info': None,
+        })
         self.data = self._successResponse({
-            'message': 'Post-processing started for %s' % self.folder,
+            'message': 'Queued %s for post-processing.' % self.folder,
             'comicid': self.comicid,
             'issueid': self.issueid,
         })
@@ -1738,6 +1994,14 @@ class Api(object):
             searchresults = mb.findComic(name, mode, issue=None, search_type='story_arc', page=page, pageSize=pageSize)
 
         searchresults = sorted(searchresults, key=itemgetter('comicyear', 'issues'), reverse=True)
+
+        # Same as _lookupCandidate: pull the covers the search already named off
+        # CV's CDN so the picker serves them from our cache. No extra API call.
+        try:
+            pullcovers.prefetch_results(searchresults)
+        except Exception as e:
+            logger.fdebug('[API] could not queue search covers: %s' % e)
+
         self.data = searchresults
 
     def _downloadIssue(self, id):

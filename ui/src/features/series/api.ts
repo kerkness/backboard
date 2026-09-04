@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { apiGet } from '../../lib/api'
 import type { Series, SeriesDetail } from './types'
-import type { SearchRun } from './searchTypes'
+import type { SearchRun, SeriesFilesPayload } from './searchTypes'
 
 export function useSeriesIndex() {
   return useQuery({
@@ -110,7 +110,14 @@ export interface CvMatch {
   publisher: string
   issues: string
   comicimage?: string
-  haveit?: string | boolean
+  /** ComicVine's own page for the series, e.g. .../paper-girls/4050-124394/ */
+  url?: string
+  /**
+   * ComicVine lookups report library membership here, but not as a boolean:
+   * mb.findComic sets the string 'No' when absent, and the matching library row
+   * ({comicid, status}) when present. See helpers.listLibrary.
+   */
+  haveit?: 'No' | { comicid: string; status: string } | null
 }
 
 /** A posting title has no ComicVine id, so following it means picking a CV match. */
@@ -129,5 +136,47 @@ export function useAddSeriesById() {
   return useMutation({
     mutationFn: (comicId: string) => apiGet<string>('addComic', { id: comicId, wantall: 1 }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['series'] }),
+  })
+}
+
+export function useSeriesFiles(comicId: string | undefined) {
+  return useQuery({
+    queryKey: ['seriesFiles', comicId],
+    queryFn: ({ signal }) => apiGet<SeriesFilesPayload>('getSeriesFiles', { id: comicId! }, signal),
+    enabled: Boolean(comicId),
+  })
+}
+
+export interface PrefetchResult {
+  pending: number
+  started: boolean
+}
+
+/**
+ * Warm the cover cache for every issue of a series.
+ *
+ * Costs no ComicVine call — issues.ImageURL is already stored, so the server only
+ * downloads from CV's CDN. Covers land asynchronously, so callers re-request the
+ * images a few times after this resolves.
+ */
+export function usePrefetchIssueCovers() {
+  return useMutation({
+    mutationFn: (comicId: string) => apiGet<PrefetchResult>('prefetchIssueCovers', { comicid: comicId }),
+  })
+}
+
+/**
+ * Search ComicVine's catalogue for series not on the watchlist.
+ *
+ * Deliberate rather than type-ahead: mb.pullsearch sleeps CVAPI_RATE (>=2s)
+ * before every call, against ComicVine's ~200/hour ceiling. One search per
+ * button press is fine; one per keystroke is not.
+ *
+ * findComic answers with a bare array rather than the usual {success, data}
+ * envelope, which apiGet already unwraps.
+ */
+export function useFindSeries() {
+  return useMutation({
+    mutationFn: (name: string) => apiGet<CvMatch[]>('findComic', { name }),
   })
 }

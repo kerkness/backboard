@@ -127,6 +127,23 @@ post-processing actually did with each file: filed, duplicate, or failed.
 A pack whose files were all duplicates raises a warning banner, because that is the case
 that silently strands issues at `Snatched`.
 
+### Series → Files tab — built 1 Sep 2026
+
+Answers "this issue says Snatched but never arrived — where is the file?" for one series.
+
+Warns up front which issues are stuck at Snatched, then lists every file on disk (staging
+and DDL roots) whose name resembles the series, each with the issue number parsed from its
+filename and a one-click **Match #N** against the issue it looks like. Below that, the
+downloads recorded against the series.
+
+The parser refuses pack ranges ("001-004") and returns no suggestion rather than guessing;
+volume markers ("v1", "Vol 2") and years are not mistaken for issue numbers.
+
+Every file shows a **cover thumbnail** extracted from its first page — click to enlarge.
+The cover is what makes a suggested match verifiable at a glance, since the issue number is
+usually printed on it. Extraction failures degrade to a placeholder icon, never a broken
+image.
+
 ### Post-download reconciliation — built 1 Sep 2026
 
 The **Files** tab on Downloads. Lists what is actually on disk in the staging and DDL
@@ -141,6 +158,194 @@ wanted issues is this screen's job.
 
 
 
+
+### Search options, CV links, toast stacking — 4 Sep 2026
+
+**Search scope moved to a gear.** The scope dropdown implied you had to choose between
+your series and ComicVine. You don't: a search always covers your own series, and the only
+question is whether it *also* reaches ComicVine. That is now a checkbox behind a gear at
+the end of the field ("Also search ComicVine"), off by default because it costs a
+rate-limited API call. The preference persists in localStorage — it reflects how someone is
+working, not a per-search decision — and rides the URL as `?cv=1` so a result page is
+shareable. Left off, the results page still offers the search as a button.
+
+**ComicVine results link out.** `mb.findComic` already returns `url`
+(`.../paper-girls/4050-124394/`), so every match row has an open-on-ComicVine button
+alongside Add series.
+
+**Toasts stack vertically.** They were rendered as a `Stack` inside a single MUI
+`Snackbar`. Snackbar is built around one message — it owns positioning, transition and
+auto-hide for a single child — so the Alerts were being laid out by its internals rather
+than by us. Replaced with a plain fixed container (`flexDirection: column`, `gap`), each
+toast carrying its own `Grow`. `pointerEvents: none` on the container and `auto` on the
+toasts keeps the empty space clickable.
+
+### Global series search — built 4 Sep 2026
+
+You could only add a series from This Week or a search-result posting. The search box now
+also finds series you don't follow yet.
+
+**ComicVine, not GCD.** `addComic` calls `addbyid(comicid)`, and the importer, issue
+lists, covers and weekly matching are all keyed to ComicVine volume ids — so a global
+search is only useful if its results carry CV ids. The Grand Comics Database has better
+print and creator data but its own identifiers, and no reliable GCD->CV mapping exists, so
+a GCD hit could be found but not added. It would be a multi-GB dataset answering a
+question you still couldn't act on.
+
+titor-cache is not an alternative to this, it's a transport for it: being a CV mirror it
+returns CV ids, so it's a drop-in. Same query, `volumes/?filter=name:Saga`: ComicVine 454
+results, titor 444 (~98%). Switching `comicvine_url` raises the ceiling enough to make
+type-ahead viable later, with no code change.
+
+The backend already existed — `findComic` was in `cmd_list`, calling `mb.findComic` ->
+`pullsearch`, and nothing in the UI ever invoked it. It answers with a bare array (not the
+`{success, data}` envelope) in the same shape as the candidate picker's `CvMatch`, so the
+row component is shared between them: cover, explicit **Add series**, and an "On
+watchlist" chip from `haveit`.
+
+**Scope lives in the search field**, GitHub-style: a dropdown reading "My series" /
+"ComicVine". Watchlist is the default because it is instant and free; ComicVine costs a
+call against ~200/hour with a >=2s sleep per call, so it stays deliberate rather than
+type-ahead. The scope rides the URL as `?scope=comicvine`, so a global search is
+shareable and survives a reload, and picking the scope with a query already typed runs it
+immediately. The results page keeps its own "Search ComicVine" button for when you started
+local and came up short.
+
+### Search results → Find series — 4 Sep 2026
+
+The candidate menu's "Find on ComicVine…" is now **Find series…**, which is what it does:
+a posting title carries no CV id, so it searches ComicVine for the series the posting
+refers to. The old label read like it would open comicvine.com.
+
+The picker gained covers and an explicit **Add series** button per row. Adding is not
+one-click undoable, so making the whole row a `ListItemButton` meant a mis-click enrolled a
+series and marked every issue Wanted; the row is now inert and only the button adds.
+
+Rows already on the watchlist show an "On watchlist" chip instead of the button.
+`haveit` looks boolean but is not — `mb.findComic` sets the string `'No'` when absent and
+the library row (`{comicid, status}`) when present, so the test is `haveit && haveit !== 'No'`.
+
+Covers come from Mylar's cache, not hotlinked from CV: `_lookupCandidate` hands its
+results to `pullcovers.prefetch_results`, which pulls the images the search already named
+off CV's CDN. That costs no extra API call. They land after the dialog opens, so it
+retries at 3s and 9s.
+
+### Unmatched: empty leftovers — 4 Sep 2026
+
+8 of the 23 entries in Unmatched were empty folders, not work. Mylar leaves the download
+folder behind after filing its contents, so a *successful* pack shows up as a directory
+with nothing in it. `Motor Girl 001-010 (2016-2017) [__556546__]` reads "0 files" because
+all 10 issues were filed to `comix/Abstract Studio/Motor Girl (2016)/` — `ddl_info` has it
+Completed at 398MB. Nothing was broken; the folder is empty *because* it worked.
+
+`_getStagedFiles` already walks recursively (`os.walk`), so this was never a read depth
+problem — there genuinely are no files.
+
+Empty directories now sort into a collapsed "N empty folders left over from
+post-processing" section with a per-row Remove, and the tab badge counts only entries that
+actually need matching (15, not 23). The folder-name marker is *not* a reliable signal —
+`[__None__]` usually means unidentified and `[__<id>__]` usually means processed, but
+`Death Vigil [__500329__]` still has 1 of 8 files left. Emptiness is what distinguishes
+them.
+
+### Series issue covers — built 4 Sep 2026
+
+The Comics tab shows each issue's own cover, with the same click-to-zoom as everywhere
+else.
+
+This costs **no ComicVine call at all**, unlike the weekly pull: `issues.ImageURL` is
+already populated for all 3,630 issues on the watchlist, so the server only downloads from
+CV's CDN. Mylar stores the `scale_small` rendition; CV serves the same image at other
+sizes from an interchangeable path segment, so `_largest_variant` swaps in `scale_large`
+for a string cost rather than a lookup. `thumbnail()` only shrinks, so an issue whose
+source art is genuinely small simply stays small.
+
+Covers reuse the pull-list store, keyed by IssueID, so `getPullCover` serves them
+unchanged and an issue already seen on the pull list is a hit immediately.
+`prefetchIssueCovers` fires per series on opening the tab; a fully-cached series does no
+work. An issue whose stored URL will not load gets the same `.none` marker, so a series
+with dead art doesn't re-download it on every visit — 6 of one test series' issues were
+in that state.
+
+There is a dead `_getIssueArt` in api.py that predates this: it is absent from `cmd_list`
+so nothing can reach it, and it calls `cache.getArtwork(IssueID=...)` when that function
+only accepts `ComicID`/`imageURL`, so it would raise if it ever were reachable. Left
+alone for now, but it should go rather than sit next to the working path looking usable.
+
+### Downloads tabs — reworked 4 Sep 2026
+
+`All | Downloaded | Unmatched | Failed | Downloading`. Order runs from what needs
+attention to what looks after itself, so Downloading sits last.
+
+The Files tab became **Unmatched**, because staged files *are* the unmatched set: they
+downloaded fine but post-processing could not place them, and the tab is where you match
+them by hand. It carries a count badge (23 at time of writing) so a backlog is visible
+without opening it.
+
+**Failed stayed separate.** It is tempting to fold it into Unmatched, but the 24 rows
+there are failed *transfers* — `Tomorrow Girl #12` got 74 MB of 77 MB — not files awaiting
+a match. Relabelling them Unmatched would promise a manual match for files that never
+arrived. The two states read the same to a user and are entirely different underneath.
+
+Tabs now declare their own source (`kind: 'downloads' | 'staged'`) rather than the page
+inferring it from an index, and the downloads query is disabled on the staged tab so it
+stops polling something it isn't showing.
+
+Caveat worth knowing: `pp_runs`/`pp_files` are empty for all 2,073 historical downloads —
+`pp_audit` was instrumented after they ran — so the per-file matched/duplicate/failed chip
+only appears for downloads post-processed from now on. Older rows say "no per-file detail
+recorded" rather than pretending to know.
+
+### Image zoom — built 4 Sep 2026
+
+Every thumbnail in the UI opens a larger view on click, via one shared
+`components/ImageLightbox.tsx` (MUI Dialog, `maxHeight: 85vh`, closes on backdrop,
+Escape, or clicking the image). It is deliberately dumb — the caller owns the
+`string | null` state and picks the URL — because the six call sites pull art from three
+endpoints: `getArt`, `getFileCover`, `getPullCover`. `FilesTab` had its own inline copy of
+this dialog; it now uses the shared one.
+
+Two call sites sit inside something else that handles clicks — the Series list row
+navigates, the Downloads accordion header expands — so those covers `stopPropagation`.
+`FileCover`'s `onClick` was widened to receive the event for that reason, and both it and
+`PullCover` only become clickable once the image has actually loaded, so a placeholder is
+never clickable.
+
+Watchlist covers (`cache/<comicid>.jpg`) are already ~830x1280, so they enlarge with no
+backend work. Pull covers were stored at 480px for a 36px list thumbnail, so `pullcovers`
+now writes two sizes from a single download: 320x480 for the list and 640x960 for the
+dialog (CV's own `scale_large` is 830x1280 / ~400KB; 640x960 fills an 85vh dialog for a
+third of the disk). `getPullCover` takes `size=zoom`, and a row cached before the zoom
+copy existed falls back to its thumbnail rather than showing nothing.
+
+Rows that ComicVine has no art for now get a `.none` marker, so a week containing one
+stops re-querying CV on every visit.
+
+### This Week covers and dates — built 4 Sep 2026
+
+The pull list is mostly series that are *not* on the watchlist, so `cache/<comicid>.jpg`
+(written when a series is added) covered only 14 of 80 rows in a typical week. Rows now
+show the actual **issue** cover via CV IssueID, falling back to the series cover via
+ComicID — 74 of 80 rows in week 35. Rows with neither id keep a neutral placeholder.
+
+Covers are resolved **a week at a time**, not per row. `cv.pulldetails` sleeps
+`CVAPI_RATE` (>=2s) before every call and cv.py has an explicit CV-banned-our-IP path, so
+one call per row (~59 misses on a cold week) was not an option. `GetBatchImages` uses
+CV's `filter=id:` with a pipe-joined list, 100 ids per call — the same shape the importer
+already uses — so a whole week costs **two** API calls. The images themselves come from
+CV's CDN, which takes no api_key and is not metered.
+
+`prefetchPullCovers` starts a background fetch and returns immediately; `getPullCover` is
+**cache-only** and never touches CV, because it is hit once per visible row. Covers land
+asynchronously, so the page re-requests misses at 4s/12s/30s. A warm week makes no CV
+call at all, so the prefetch is safe to fire on every view.
+
+The header shows the real date range (`Aug 30 – Sep 5, 2026`) with `Week 35 · 2026` kept
+underneath. Weeks are Python `%U` (Sunday-first) because that is what `_weekOf` and the
+`weekly` table use; `week.ts` derives the range from that and is checked against Python's
+own `%U` across 2020-2030. The previous `shiftWeek` approximated by adding 7-day
+multiples to Jan 1 and did not round-trip across New Year (2025-W52 → 2026-W01 → W00), so
+it now steps through the actual Sunday.
 
 ### Discovery
 

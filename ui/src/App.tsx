@@ -1,6 +1,7 @@
 import { Navigate, Route, Routes } from 'react-router-dom'
 import { Layout } from './app/Layout'
 import { SeriesListPage } from './features/series/SeriesListPage'
+import { AboutPage } from './features/about/AboutPage'
 import { SeriesDetailPage } from './features/series/SeriesDetailPage'
 import { WeeklyPage } from './features/weekly/WeeklyPage'
 import { ActivityPage } from './features/activity/ActivityPage'
@@ -17,6 +18,7 @@ export function App() {
         <Route path="this-week" element={<WeeklyPage />} />
         <Route path="activity" element={<ActivityPage />} />
         <Route path="downloads" element={<DownloadsPage />} />
+        <Route path="about" element={<AboutPage />} />
         <Route path="*" element={<Navigate to="/series" replace />} />
       </Route>
     </Routes>

@@ -63,8 +63,18 @@ class PostProcessor(object):
         if queue:
             self.queue = queue
 
+        # fork-local fix: __init__ cannot return a value -- upstream's
+        # `return {'status': 'IN PROGRESS'}` here raises
+        # "TypeError: __init__() should return None, not 'dict'" for every caller
+        # that constructs a PostProcessor while the lock is held. Record it instead;
+        # callers should be going through PP_QUEUE, which checks APILOCK first.
+        self.apilocked = False
         if mylar.APILOCK is True:
-            return {'status':  'IN PROGRESS'}
+            logger.warn(
+                '%s another post-process is already running (APILOCK); this one may'
+                ' contend with it.' % self.module
+            )
+            self.apilocked = True
 
         if apicall is True:
             self.apicall = True

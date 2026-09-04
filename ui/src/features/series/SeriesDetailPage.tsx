@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { Link as RouterLink, useParams, useSearchParams } from 'react-router-dom'
 import Alert from '@mui/material/Alert'
 import Box from '@mui/material/Box'
@@ -9,20 +10,24 @@ import Tab from '@mui/material/Tab'
 import Tabs from '@mui/material/Tabs'
 import Typography from '@mui/material/Typography'
 import { comicArtUrl } from '../../lib/api'
+import { ImageLightbox } from '../../components/ImageLightbox'
 import { useSeriesDetail } from './api'
 import { HaveBar } from './HaveBar'
 import { StatusChip } from './StatusChip'
 import { IssuesTab } from './IssuesTab'
 import { SearchResultsTab } from './SearchResultsTab'
+import { FilesTab } from './FilesTab'
 
 export function SeriesDetailPage() {
+  const [coverZoom, setCoverZoom] = useState(false)
   const { comicId } = useParams<{ comicId: string }>()
   const { data, isLoading, error } = useSeriesDetail(comicId)
   // Tab lives in the URL so Activity can link straight to the search evidence.
   const [searchParams, setSearchParams] = useSearchParams()
-  const tab = searchParams.get('tab') === 'search' ? 1 : 0
+  const TABS = ['comics', 'search', 'files']
+  const tab = Math.max(0, TABS.indexOf(searchParams.get('tab') ?? 'comics'))
   const setTab = (next: number) =>
-    setSearchParams(next === 1 ? { tab: 'search' } : {}, { replace: true })
+    setSearchParams(next === 0 ? {} : { tab: TABS[next] }, { replace: true })
 
   if (error) return <Alert severity="error">{(error as Error).message}</Alert>
   if (isLoading || !data) return <CircularProgress />
@@ -46,11 +51,13 @@ export function SeriesDetailPage() {
           component="img"
           src={comicArtUrl(series.id)}
           alt=""
+          onClick={() => setCoverZoom(true)}
           sx={{
             width: { xs: 96, sm: 128 },
             borderRadius: 1,
             alignSelf: 'flex-start',
             boxShadow: 1,
+            cursor: 'zoom-in',
           }}
         />
         <Stack spacing={1} sx={{ minWidth: 0, flex: 1 }}>
@@ -77,11 +84,19 @@ export function SeriesDetailPage() {
         <Tabs value={tab} onChange={(_, v) => setTab(v)} variant="scrollable" allowScrollButtonsMobile>
           <Tab label={`Comics (${data.issues.length})`} />
           <Tab label="Search Results" />
+          <Tab label="Files" />
         </Tabs>
       </Box>
 
-      {tab === 0 && <IssuesTab issues={data.issues} loading={isLoading} />}
+      {tab === 0 && <IssuesTab issues={data.issues} loading={isLoading} comicId={series.id} />}
       {tab === 1 && <SearchResultsTab comicId={series.id} />}
+      {tab === 2 && <FilesTab comicId={series.id} />}
+
+      <ImageLightbox
+        src={coverZoom ? comicArtUrl(series.id) : null}
+        alt={series.name ?? ''}
+        onClose={() => setCoverZoom(false)}
+      />
     </Stack>
   );
 }

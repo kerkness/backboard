@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import Alert from '@mui/material/Alert'
 import Avatar from '@mui/material/Avatar'
@@ -8,20 +8,46 @@ import Stack from '@mui/material/Stack'
 import Typography from '@mui/material/Typography'
 import { comicArtUrl } from '../../lib/api'
 import { DataTable } from '../../components/DataTable'
+import { ImageLightbox } from '../../components/ImageLightbox'
+import { GlobalSeriesSearch } from './GlobalSeriesSearch'
 import type { Column } from '../../components/DataTable'
 import { useSeriesIndex } from './api'
 import type { Series } from './types'
 import { HaveBar } from './HaveBar'
 import { StatusChip } from './StatusChip'
 
-const columns: Column<Series>[] = [
+/** Row click navigates to the series, so the cover has to swallow its own click. */
+function SeriesCover({
+  row,
+  size,
+  onZoom,
+}: {
+  row: Series
+  size: number
+  onZoom: (r: Series) => void
+}) {
+  return (
+    <Avatar
+      variant="rounded"
+      src={comicArtUrl(row.id)}
+      alt=""
+      onClick={(e) => {
+        e.stopPropagation()
+        onZoom(row)
+      }}
+      sx={{ width: size, height: Math.round(size * 1.5), cursor: 'zoom-in' }}
+    />
+  )
+}
+
+const buildColumns = (onZoom: (r: Series) => void): Column<Series>[] => [
   {
     key: 'name',
     header: 'Comic',
     sortValue: (r) => r.name,
     render: (r) => (
       <Stack direction="row" spacing={1.5} sx={{ alignItems: 'center' }}>
-        <Avatar variant="rounded" src={comicArtUrl(r.id)} alt="" sx={{ width: 24, height: 36 }} />
+        <SeriesCover row={r} size={24} onZoom={onZoom} />
         <span>{r.name}</span>
       </Stack>
     ),
@@ -46,9 +72,9 @@ const columns: Column<Series>[] = [
   },
 ]
 
-const renderCard = (r: Series) => (
+const buildRenderCard = (onZoom: (r: Series) => void) => (r: Series) => (
   <Stack direction="row" spacing={1.5} sx={{ alignItems: 'center' }}>
-    <Avatar variant="rounded" src={comicArtUrl(r.id)} alt="" sx={{ width: 36, height: 54 }} />
+    <SeriesCover row={r} size={36} onZoom={onZoom} />
     <Box sx={{ minWidth: 0, flex: 1 }}>
       <Typography variant="body2" noWrap sx={{ fontWeight: 600 }}>
         {r.name}
@@ -68,7 +94,11 @@ export function SeriesListPage() {
   const { data, isLoading, error } = useSeriesIndex()
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
+  const [zoom, setZoom] = useState<Series | null>(null)
   const query = searchParams.get('q')?.toLowerCase() ?? ''
+
+  const columns = useMemo(() => buildColumns(setZoom), [])
+  const renderCard = useMemo(() => buildRenderCard(setZoom), [])
 
   const rows = useMemo(() => {
     if (!data) return []
@@ -102,6 +132,18 @@ export function SeriesListPage() {
           pageSize={50}
         />
       </Paper>
+
+      {/* The watchlist above answers "do I follow this?"; this answers "does it exist?" */}
+      <GlobalSeriesSearch
+        query={searchParams.get('q') ?? ''}
+        auto={searchParams.get('cv') === '1'}
+      />
+
+      <ImageLightbox
+        src={zoom ? comicArtUrl(zoom.id) : null}
+        alt={zoom?.name ?? ''}
+        onClose={() => setZoom(null)}
+      />
     </Stack>
   )
 }

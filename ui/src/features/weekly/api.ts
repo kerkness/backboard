@@ -25,3 +25,24 @@ export function useAddSeries() {
     },
   })
 }
+
+export interface PrefetchResult {
+  /** Rows in this week that still have no cached cover. */
+  pending: number
+  /** False when nothing needed fetching, or a fetch for this week is already running. */
+  started: boolean
+}
+
+/**
+ * Warm the cover cache for a week.
+ *
+ * The server resolves the whole week in one or two ComicVine calls and downloads
+ * the art from CV's CDN, which isn't rate limited. Covers land asynchronously, so
+ * callers re-request the images a few times after this resolves.
+ */
+export function usePrefetchPullCovers() {
+  return useMutation({
+    mutationFn: ({ week, year }: { week: string; year: string }) =>
+      apiGet<PrefetchResult>('prefetchPullCovers', { week, year }),
+  })
+}

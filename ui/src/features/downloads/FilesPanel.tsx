@@ -16,10 +16,14 @@ import Stack from '@mui/material/Stack'
 import TextField from '@mui/material/TextField'
 import Typography from '@mui/material/Typography'
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore'
+import { fileCoverUrl } from '../../lib/api'
+import { FileCover } from '../../components/FileCover'
+import { ImageLightbox } from '../../components/ImageLightbox'
 import { useToast } from '../../app/ToastProvider'
 import { useSeriesIndex, useSeriesDetail } from '../series/api'
 import { useDeleteStagedFile, useMatchStagedFile, useStagedFiles } from './api'
 import type { StagedFile } from './types'
+import { isLeftover } from './staged'
 
 const human = (n: number) => {
   if (!n) return '0 B'
@@ -65,7 +69,7 @@ function MatchDialog({
           <Autocomplete
             options={issues}
             disabled={!comicId}
-            getOptionLabel={(o) => `#${o.number} — ${o.name ?? ''} (${o.status})`}
+            getOptionLabel={(o) => `#${o.number} ${o.name ?? ''} (${o.status})`}
             onChange={(_, v) => {
               if (!v || !path) return
               match.mutate(
@@ -82,7 +86,7 @@ function MatchDialog({
             renderInput={(params) => (
               <TextField
                 {...params}
-                label={comicId ? 'Issue — choosing one starts the match' : 'Pick a series first'}
+                label={comicId ? 'Issue (choosing one starts the match)' : 'Pick a series first'}
                 size="small"
               />
             )}
@@ -97,14 +101,32 @@ function MatchDialog({
   )
 }
 
-function FileRow({ f, onMatch }: { f: StagedFile; onMatch: (path: string, name: string) => void }) {
+function FileRow({
+  f,
+  onMatch,
+  onZoom,
+}: {
+  f: StagedFile
+  onMatch: (path: string, name: string) => void
+  onZoom: (path: string) => void
+}) {
   const del = useDeleteStagedFile()
   const toast = useToast()
 
   return (
     <Accordion disableGutters variant="outlined">
       <AccordionSummary expandIcon={f.contents.length ? <ExpandMoreIcon /> : null}>
-        <Stack direction="row" spacing={1} sx={{ alignItems: 'center', width: '100%', flexWrap: 'wrap' }}>
+        <Stack direction="row" spacing={1.5} sx={{ alignItems: 'center', width: '100%', flexWrap: 'wrap' }}>
+          {!f.is_dir && (
+            <FileCover
+              path={f.path}
+              width={36}
+              onClick={(e) => {
+                e.stopPropagation()
+                onZoom(f.path)
+              }}
+            />
+          )}
           <Typography variant="body2" sx={{ fontWeight: 600, minWidth: 0 }} noWrap>
             {f.name}
           </Typography>
@@ -147,6 +169,7 @@ function FileRow({ f, onMatch }: { f: StagedFile; onMatch: (path: string, name: 
                 spacing={1}
                 sx={{ alignItems: 'center', py: 0.5 }}
               >
+                <FileCover path={c.path} width={36} onClick={() => onZoom(c.path)} />
                 <Typography variant="body2" sx={{ minWidth: 0, flex: 1 }} noWrap>
                   {c.name}
                 </Typography>
@@ -165,12 +188,35 @@ function FileRow({ f, onMatch }: { f: StagedFile; onMatch: (path: string, name: 
   )
 }
 
+function LeftoverRow({ f, onDelete }: { f: StagedFile; onDelete: (path: string) => void }) {
+  return (
+    <Stack
+      direction="row"
+      spacing={1}
+      sx={{ alignItems: 'center', py: 0.25, pl: 1 }}
+    >
+      <Typography variant="caption" sx={{ color: 'text.secondary', minWidth: 0, flex: 1 }} noWrap>
+        {f.name}
+      </Typography>
+      <Button size="small" color="inherit" onClick={() => onDelete(f.path)}>
+        Remove
+      </Button>
+    </Stack>
+  )
+}
+
 export function FilesPanel() {
   const { data, isLoading, error } = useStagedFiles()
   const [target, setTarget] = useState<{ path: string; name: string } | null>(null)
+  const [zoom, setZoom] = useState<string | null>(null)
+  const del = useDeleteStagedFile()
 
   if (error) return <Alert severity="error">{(error as Error).message}</Alert>
   if (isLoading) return <CircularProgress size={20} />
+
+  const all = data?.files ?? []
+  const unmatched = all.filter((f) => !isLeftover(f))
+  const leftovers = all.filter(isLeftover)
 
   return (
     <Stack spacing={1.5}>
@@ -179,20 +225,52 @@ export function FilesPanel() {
         and files it accordingly.
       </Typography>
 
-      {data?.files.length === 0 && (
+      {unmatched.length === 0 && (
         <Typography variant="body2" sx={{ color: 'text.secondary' }}>
-          Nothing staged.
+          Nothing waiting to be matched.
         </Typography>
       )}
 
-      {data?.files.map((f) => (
-        <FileRow key={f.path} f={f} onMatch={(path, name) => setTarget({ path, name })} />
+      {unmatched.map((f) => (
+        <FileRow
+          key={f.path}
+          f={f}
+          onMatch={(path, name) => setTarget({ path, name })}
+          onZoom={setZoom}
+        />
       ))}
+
+      {leftovers.length > 0 && (
+        <Accordion disableGutters variant="outlined">
+          <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+            <Typography variant="body2" sx={{ color: 'text.secondary' }}>
+              {leftovers.length} empty folder{leftovers.length === 1 ? '' : 's'} left over from
+              post-processing
+            </Typography>
+          </AccordionSummary>
+          <AccordionDetails>
+            <Typography variant="caption" sx={{ color: 'text.secondary' }}>
+              These contain no files. Their contents were already filed into your library.
+              Removing one deletes just the empty folder.
+            </Typography>
+            <Stack sx={{ mt: 1 }} divider={<Divider />}>
+              {leftovers.map((f) => (
+                <LeftoverRow key={f.path} f={f} onDelete={(path) => del.mutate(path)} />
+              ))}
+            </Stack>
+          </AccordionDetails>
+        </Accordion>
+      )}
 
       <MatchDialog
         path={target?.path ?? null}
         name={target?.name ?? ''}
         onClose={() => setTarget(null)}
+      />
+
+      <ImageLightbox
+        src={zoom ? fileCoverUrl(zoom) : null}
+        onClose={() => setZoom(null)}
       />
     </Stack>
   )

@@ -64,6 +64,12 @@ def pulldetails(comicid, rtype, issueid=None, offset=1, arclist=None, comicidlis
         PULLURL = mylar.CVURL + 'issue/4000-' + str(issueid) + '?api_key=' + str(comicapi) + '&format=json'
     elif rtype == 'db_updater':
         PULLURL = mylar.CVURL + 'issues/?api_key=' + str(comicapi) + '&format=json&filter=date_last_updated:'+dateinfo['start_date']+'|'+dateinfo['end_date']+'&field_list=date_last_updated,id,volume,issue_number&sort=date_last_updated:asc&offset=' + str(offset)
+    elif rtype == 'issue_images':
+        #cover art for the weekly pull, 100 IssueIDs per call (see GetBatchImages).
+        PULLURL = mylar.CVURL + 'issues/?api_key=' + str(comicapi) + '&format=json&filter=id:' + str(comicidlist) + '&field_list=id,image&offset=' + str(offset)
+    elif rtype == 'volume_images':
+        #same, for pull entries that carry a ComicID but no IssueID.
+        PULLURL = mylar.CVURL + 'volumes/?api_key=' + str(comicapi) + '&format=json&filter=id:' + str(comicidlist) + '&field_list=id,image&offset=' + str(offset)
     #logger.info('CV.PULLURL: ' + PULLURL)
     #new CV API restriction - one api request / second.
     if mylar.CONFIG.CVAPI_RATE is None or mylar.CONFIG.CVAPI_RATE < 2:
@@ -85,7 +91,8 @@ def pulldetails(comicid, rtype, issueid=None, offset=1, arclist=None, comicidlis
     #logger.fdebug('cv status code : ' + str(r.status_code))
     #logger.fdebug('rtype: %s' % rtype)
     try:
-        if any([rtype == 'single_issue', rtype == 'db_updater']):
+        if any([rtype == 'single_issue', rtype == 'db_updater',
+                rtype == 'issue_images', rtype == 'volume_images']):
             dom = r.json()
             #logger.info('cv_data returned: %s' % dom)
         else:
@@ -168,6 +175,8 @@ def getComic(comicid, rtype, issueid=None, arc=None, arcid=None, arclist=None, c
     elif any([rtype == 'image', rtype == 'firstissue', rtype == 'imprints_first']):
         dom = pulldetails(comicid, rtype, issueid, 1)
         return Getissue(issueid, dom, rtype)
+    elif any([rtype == 'issue_images', rtype == 'volume_images']):
+        return GetBatchImages(rtype, comicidlist)
     elif rtype == 'storyarc':
         dom = pulldetails(arc, 'storyarc', None, 1)
         return GetComicInfo(issueid, dom)
@@ -701,6 +710,38 @@ def Getissue(issueid, dom, rtype):
 
         return {'image':     image,
                 'image_alt': image_alt}
+
+def GetBatchImages(rtype, idlist):
+    """Cover URLs for many CV ids at once, as {id: url}.
+
+    CV's `filter=id:` accepts a pipe-joined list capped at 100 results per call
+    (same shape the importer uses for its reverse IssueID lookup), so a whole
+    week of pull covers costs one or two API hits instead of one per row.
+
+    Only the *metadata* lookup is metered; the images themselves come from CV's
+    CDN without an api_key and are not rate limited.
+    """
+    images = {}
+    if not idlist:
+        return images
+
+    idlist = [str(i) for i in idlist]
+    for start in range(0, len(idlist), 100):
+        chunk = idlist[start:start + 100]
+        result = pulldetails(None, rtype, offset=0, comicidlist='|'.join(chunk))
+        if not result:
+            # A CV timeout shouldn't lose the batches that already succeeded.
+            logger.warn('[CV-IMAGES] no response for %s ids %s-%s; keeping %s so far'
+                        % (rtype, start, start + len(chunk), len(images)))
+            break
+
+        for entry in result.get('results') or []:
+            image = entry.get('image') or {}
+            url = image.get('super_url') or image.get('medium_url') or image.get('small_url')
+            if entry.get('id') is not None and url:
+                images[str(entry['id'])] = url
+
+    return images
 
 def GetSeriesYears(dom):
     #used by the 'add a story arc' option to individually populate the Series Year for each series within the given arc.

@@ -259,6 +259,26 @@ Now bound by keyword, with the folder basename as `nzb_name` and `apicall=True`.
 
 *Upstream bug.* **Not being upstreamed** — see the note under Branch layout.
 
+### 12. `feat(files): per-series file reconciliation` — `mylar/api.py`
+
+`getSeriesFiles` pairs files found under the staging/DDL roots with the issues they look
+like they satisfy, so a Snatched-but-never-arrived issue can be matched by hand.
+
+Issue numbers are parsed from filenames with the series name removed first, so
+`Sandman v1 02.cbr` yields 2 rather than 1 (the volume marker), and `American Splendor 001
+(2006)` yields 1 rather than 2006. Pack ranges return None — no suggestion beats a wrong
+one. Tested against ten real filename shapes from this library.
+
+Note packs are already extracted on disk: `zip_zip()` unpacks a `.zip` before the DDL
+queue sees it, so individual issue files are directly matchable without archive handling.
+
+`getFileCover` serves a cached thumbnail of a file's first page. It reuses
+`getimage.open_archive` (which also handles a zip mis-named `.cbr`) and `comic_pages`, but
+**not** `extract_image` — that writes to a single fixed `temp_notif` path and would collide
+across concurrent thumbnail requests. Covers are cached under `<cache>/file_covers` keyed
+by path+mtime+size, so a changed file re-extracts. Verified against real `.cbr` files:
+33 pages read, first page thumbnailed to 312x480 at ~47KB.
+
 ## Local config and data changes
 
 Not code, so not in any commit — recorded here so they aren't a mystery later.

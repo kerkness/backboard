@@ -16,19 +16,33 @@ import Tabs from '@mui/material/Tabs'
 import TablePagination from '@mui/material/TablePagination'
 import Typography from '@mui/material/Typography'
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore'
-import { useDownloads } from './api'
+import { useDownloads, useStagedFiles } from './api'
 import { FilesPanel } from './FilesPanel'
+import { isLeftover } from './staged'
 import type { Download, PpFile } from './types'
 
 const PAGE = 20
-const FILTERS = [
-  { label: 'All', status: undefined },
-  { label: 'Downloading', status: 'Downloading' },
-  { label: 'Completed', status: 'Completed' },
-  { label: 'Failed', status: 'Failed' },
+
+/**
+ * Tabs read from two different sources, so each one declares which.
+ *
+ * `Unmatched` is the staged-files view: things that downloaded fine but that
+ * post-processing could not place, and which you can match by hand. That is a
+ * separate state from `Failed`, where the transfer itself never completed, so
+ * the two stay apart. Order runs from what usually needs attention to what
+ * mostly looks after itself, which puts Downloading last.
+ */
+type TabDef =
+  | { label: string; kind: 'downloads'; status?: string }
+  | { label: string; kind: 'staged' }
+
+const TABS: TabDef[] = [
+  { label: 'All', kind: 'downloads' },
+  { label: 'Downloaded', kind: 'downloads', status: 'Completed' },
+  { label: 'Unmatched', kind: 'staged' },
+  { label: 'Failed', kind: 'downloads', status: 'Failed' },
+  { label: 'Downloading', kind: 'downloads', status: 'Downloading' },
 ]
-// Files sits alongside the status filters as the last tab.
-const FILES_TAB = FILTERS.length
 
 const OUTCOME_COLOR: Record<string, 'success' | 'warning' | 'error'> = {
   filed: 'success',
@@ -86,7 +100,7 @@ function DownloadRow({ d }: { d: Download }) {
                 size="small"
                 variant="outlined"
                 color={pp.filed_count > 0 ? 'success' : 'warning'}
-                label={`${pp.filed_count} filed · ${pp.duplicate_count} dupe${
+                label={`${pp.filed_count} matched · ${pp.duplicate_count} duplicate${
                   pp.failed_count ? ` · ${pp.failed_count} failed` : ''
                 }`}
               />
@@ -148,7 +162,7 @@ function DownloadRow({ d }: { d: Download }) {
         {!pp ? (
           <Typography variant="body2" sx={{ color: 'text.secondary' }}>
             {live
-              ? 'Still downloading — post-processing has not run yet.'
+              ? 'Still downloading. Post-processing has not run yet.'
               : 'No post-processing recorded for this download.'}
           </Typography>
         ) : pp.files.length === 0 ? (
@@ -170,10 +184,17 @@ function DownloadRow({ d }: { d: Download }) {
 export function DownloadsPage() {
   const [tab, setTab] = useState(0)
   const [page, setPage] = useState(0)
+  const active = TABS[tab] ?? TABS[0]
+  const staged = active.kind === 'staged'
+  // Badge the tab so a pile of unmatched files is visible without opening it.
+  const { data: stagedFiles } = useStagedFiles()
+  // Empty leftover folders aren't work; counting them overstates the backlog.
+  const unmatched = stagedFiles?.files.filter((f) => !isLeftover(f)).length ?? 0
   const { data, isLoading, error } = useDownloads({
     limit: PAGE,
     offset: page * PAGE,
-    status: FILTERS[tab]?.status,
+    status: active.kind === 'downloads' ? active.status : undefined,
+    enabled: !staged,
   })
 
   if (error) return <Alert severity="error">{(error as Error).message}</Alert>
@@ -191,25 +212,27 @@ export function DownloadsPage() {
         variant="scrollable"
         allowScrollButtonsMobile
       >
-        {FILTERS.map((f) => (
-          <Tab key={f.label} label={f.label} />
+        {TABS.map((t) => (
+          <Tab
+            key={t.label}
+            label={t.kind === 'staged' && unmatched ? `${t.label} (${unmatched})` : t.label}
+          />
         ))}
-        <Tab label="Files" />
       </Tabs>
 
-      {tab === FILES_TAB && <FilesPanel />}
+      {staged && <FilesPanel />}
 
-      {tab !== FILES_TAB && isLoading && !data && <CircularProgress size={20} />}
+      {!staged && isLoading && !data && <CircularProgress size={20} />}
 
-      {tab !== FILES_TAB && data?.downloads.length === 0 && (
+      {!staged && data?.downloads.length === 0 && (
         <Typography variant="body2" sx={{ color: 'text.secondary' }}>
           Nothing here.
         </Typography>
       )}
 
-      {tab !== FILES_TAB && data?.downloads.map((d) => <DownloadRow key={d.id} d={d} />)}
+      {!staged && data?.downloads.map((d) => <DownloadRow key={d.id} d={d} />)}
 
-      {tab !== FILES_TAB && (data?.total ?? 0) > PAGE && (
+      {!staged && (data?.total ?? 0) > PAGE && (
         <TablePagination
           component="div"
           count={data!.total}

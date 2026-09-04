@@ -159,7 +159,7 @@ export function SearchResultsTab({ comicId }: { comicId: string }) {
           Search all wanted
         </Button>
         <Typography variant="caption" sx={{ color: 'text.secondary' }}>
-          Runs in the background — roughly 45s per issue.
+          Runs in the background, roughly 45s per issue.
         </Typography>
       </Stack>
 

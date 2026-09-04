@@ -59,3 +59,26 @@ export async function apiGet<T>(
 
 /** Cover art, served by Mylar from its own cache rather than hotlinked from ComicVine. */
 export const comicArtUrl = (comicId: string) => apiUrl('getArt', { id: comicId })
+
+/** First page of a staged comic archive, extracted and cached server-side. */
+export const fileCoverUrl = (path: string) => apiUrl('getFileCover', { path })
+
+/**
+ * Cover art for a pull-list row, served from Mylar's cache.
+ *
+ * Cache-only on the server: a row with no cover yet returns an error rather than
+ * blocking on ComicVine, so callers should handle the image failing to load.
+ * `epoch` busts the browser cache after a prefetch lands new art.
+ */
+export const pullCoverUrl = (
+  issueId: string | null,
+  comicId: string | null,
+  epoch = 0,
+  size: 'thumb' | 'zoom' = 'thumb',
+) =>
+  apiUrl('getPullCover', {
+    issueid: issueId ?? undefined,
+    comicid: comicId ?? undefined,
+    size: size === 'thumb' ? undefined : size,
+    v: epoch || undefined,
+  })

@@ -1,49 +1,107 @@
-## ![Mylar Logo](https://github.com/MylarComics/mylar3/blob/stable/data/images/mylarlogo.png) Mylar3
+# Backboard
 
-[![GitHub release (latest SemVer)](https://img.shields.io/github/v/release/MylarComics/mylar3?color=blue&label=current%20release&sort=semver)](https://github.com/MylarComics/mylar3/releases)
-[![Docker Pulls](https://img.shields.io/docker/pulls/linuxserver/mylar3)](https://hub.docker.com/r/linuxserver/mylar3)
+**A refreshed web UI for [Mylar3](https://github.com/MylarComics/mylar3).**
 
-Mylar is an automated Comic Book (cbr/cbz) downloader program for use with NZB and torrents.
+This is a fork of [MylarComics/mylar3](https://github.com/MylarComics/mylar3) that adds an
+alternative web interface on top of the existing Mylar API, along with some fixes and
+optimisations underneath.
 
-Mylar allows you to create a watchlist of series that it monitors for various things (new issues, updated information, etc). It will grab, sort, and rename downloaded issues.
-It will also allow you to monitor weekly pull-lists for items belonging to said watchlisted series to download, as well as being able to monitor and maintain story-arcs.
+It is not a different comic downloader. The engine, the database and the API are Mylar's. 
+Backboard is just a re-invisioned front end over them, and Mylar's own interface is still 
+there for everything this one doesn't cover.
 
-This is the community continuity fork of mylar - originally located at https://github.com/mylar3/mylar3.
+> **Not affiliated with or endorsed by the Mylar3 project.** If something in this UI is
+> broken, that is this fork's doing. Please report it
+> [here](https://github.com/kerkness/mylar3/issues), **not** on the Mylar3 issue tracker or
+> their Discord.
 
-## Installation
-Install it via git clone or via [Docker](https://hub.docker.com/r/linuxserver/mylar3)
+---
 
-## Documentation
-Check out our [website](https://mylar.nerdfirehurricane.com/) for documentation!
+## How this was built
 
-## Support & Discussion
-Please try to limit Github issues to bugs & enhancement requests ONLY
-- [Github](https://github.com/MylarComics/mylar3/issues) (Bug & Feature requests only)
+**This project is 100% vibe coded.** Every line of it was written by AI. I direct the work,
+review it and decide what ships, but I am not hand-writing this code.
 
-## Live Support / Conversation
+I have thirty+ years experience as a full stack web developer, and that shows up in what gets built
+and what gets rejected. It is not an experiment in letting a model run unattended. It is an experiment 
+in how far this way of working goes when someone who knows the craft is steering.
+
+Two things I get out of it: I find out what is actually possible with AI right now, and I
+end up with the Mylar UI I want.
+
+**It has been selfishly designed.** I built the screens I use, in the way I use them. There
+is almost certainly no support here for things other people rely on. That is not an
+oversight so much as a starting point, and I would rather say so plainly than have you
+discover it.
+
+Ideas, suggestions and contributions are welcome.
+
+## What this adds
+
+Everything Mylar already does, it still does. What's new:
+
+**A responsive UI.** The interface works on a phone, not just a desktop browser.
+
+**Cover art everywhere.** The weekly pull, your series, individual issues and search
+results. Images are cached locally rather than hotlinked, and resolved in batches to stay
+inside ComicVine's rate limits.
+
+**A flow for the things that don't match automatically.** This is the part I actually built
+this for:
+
+- **Unmatched files** Files that downloaded fine but that post-processing couldn't place.
+  They get their own tab, with cover previews, and you can match one against a chosen series
+  and issue instead of moving and renaming it by hand.
+- **Candidate review** Act on search results the matcher rejected, rather than losing them
+  to a log line.
+
+Underneath, to make the above possible:
+
+- **Post-processing audit** (`pp_runs` / `pp_files`) Actionable details on what happened to 
+  each file in a download: filed, duplicate or failed. Previously this only ever reached the log.
+- **Search audit** What was searched for, and why candidates were rejected.
+- Assorted engine fixes: DDL queue survival, SAB timeouts, pack filename handling.
+
+Full detail, including every local patch and why it exists, is in [FORK.md](FORK.md).
+UI decisions are recorded in [DESIGN.md](DESIGN.md).
+
+## Installing
+
+Same as Mylar3. This fork runs the same way:
+
+```bash
+git clone https://github.com/kerkness/mylar3.git
+cd mylar3
+python3 Mylar.py
+```
+
+The UI is served at `http://<host>:<port>/ui`. Mylar's own interface stays at
+`http://<host>:<port>/home`, and **settings are only available there currently**.
+
+The UI is a build artifact committed to `data/ui`. To work on it:
+
+```bash
+cd ui
+npm install
+npm run dev     # dev server, proxies /api to a running Mylar
+npm run build   # writes to ../data/ui, which Mylar serves
+```
+
+## Upstream
+
+Mylar3 is the work of its maintainers and contributors, and none of this exists without it.
+If you find this useful, the project worth supporting is theirs. They take help as code,
+documentation, and answering questions on Discord.
+
+- [MylarComics/mylar3](https://github.com/MylarComics/mylar3)
+- [Documentation](https://mylar.nerdfirehurricane.com/)
 - [Discord](https://discord.gg/6qpyCZRZRB)
+- [How to contribute to Mylar3](https://mylar.nerdfirehurricane.com/docs/contributing)
 
-## Features
-- Abliity to be run on various OS' (windows, linux, macOS, Raspberry Pi, etc)
-- Support for SABnzbd, NZBGet and various torrent clients (as well as Blackhole)
-- Multiple newznabs support, as well including a raw indexer and direct download being available
-- Ability to see upcoming new releases for a particular week and take action on them if required
-- View pullists up to 4 weeks in advance, or several months prior
-- TPB's and GN's are both supported as far as monitoring and post-processing (not import atm)
-- Can scan your existing library and download any missing issues
-- Failed download handling will download a new issue if one fails
-- Configurable file and folder renaming
-- Metatagging of issues via modified version of the awesome ComicTagger 
-- Will automatically meta-tag downloaded issues either during (post-processing) or after (manual post-processing)
-- Generation of series.json files which contain series information for 3rd party applications
-- Notification on snatches / downloads using various notif applications
-- Ability to track story arc issues belonging to specific arcs, as well as various options pertaining to the arc
+Bugs that aren't specific to this fork are worth reporting upstream, where they help
+everyone.
 
-...
-AND SO MUCH MORE!
+## Licence
 
-## Contributing
-If you wish to help out, please see our [contribution policy](CONTRIBUTING.md) for code contribution, and [our website](https://mylar.nerdfirehurricane.com/docs/contributing) for other ways you can help.
-
-<p align="center">This project exists thanks to all the people who contribute - whether by code, assisting others or financial donations.</br> 
-To all those who have contributed, we thank you for your support.</p>
+GPL-3.0, the same as Mylar3. This is a modified version of Mylar3; see [FORK.md](FORK.md)
+for what was changed and when.

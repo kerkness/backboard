@@ -63,3 +63,33 @@ export const REASON_LABELS: Record<string, string> = {
 
 export const reasonLabel = (reason: string | null) =>
   reason ? (REASON_LABELS[reason] ?? reason) : 'Rejected'
+
+/** Shapes from `_getSeriesFiles` — on-disk files paired with the issues they look like. */
+export interface SeriesFile {
+  name: string
+  path: string
+  size: number
+  issue_number: number | null
+  suggested_issueid: string | null
+  suggested_status: string | null
+}
+
+export interface SeriesDownload {
+  id: string
+  series: string | null
+  filename: string | null
+  size: string | null
+  status: string
+  link_type: string | null
+  pack: number | null
+  issues: string | null
+  updated_date: string | null
+}
+
+export interface SeriesFilesPayload {
+  comicid: string
+  comicname: string
+  issues: { id: string; number: string; name: string | null; status: string }[]
+  downloads: SeriesDownload[]
+  files: SeriesFile[]
+}

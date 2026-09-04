@@ -2,12 +2,16 @@ import { useQuery } from '@tanstack/react-query'
 import { apiGet } from '../../lib/api'
 import type { DownloadPage } from './types'
 
-export function useDownloads(opts: { limit?: number; offset?: number; status?: string } = {}) {
-  const { limit = 20, offset = 0, status } = opts
+export function useDownloads(
+  opts: { limit?: number; offset?: number; status?: string; enabled?: boolean } = {},
+) {
+  const { limit = 20, offset = 0, status, enabled = true } = opts
   return useQuery({
     queryKey: ['downloads', limit, offset, status],
     queryFn: ({ signal }) => apiGet<DownloadPage>('getDownloads', { limit, offset, status }, signal),
     placeholderData: (prev) => prev,
+    // The Unmatched tab reads staged files instead, so don't poll downloads there.
+    enabled,
     // In-flight transfers only look alive if the numbers move.
     refetchInterval: 10_000,
   })

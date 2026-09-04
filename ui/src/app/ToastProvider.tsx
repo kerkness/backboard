@@ -1,8 +1,8 @@
 import { createContext, useCallback, useContext, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
 import Alert from '@mui/material/Alert'
-import Snackbar from '@mui/material/Snackbar'
-import Stack from '@mui/material/Stack'
+import Box from '@mui/material/Box'
+import Grow from '@mui/material/Grow'
 
 type Severity = 'success' | 'info' | 'warning' | 'error'
 
@@ -18,6 +18,15 @@ export const useToast = () => useContext(ToastContext)
 
 let nextId = 0
 
+/**
+ * Toasts, stacked vertically, newest at the bottom.
+ *
+ * Deliberately not MUI's Snackbar: Snackbar is built around a *single* message —
+ * it owns the positioning, transition and auto-hide for one child — so a Stack of
+ * Alerts inside one ends up fighting its layout rather than being laid out by us.
+ * A plain fixed container stacks predictably and lets each toast carry its own
+ * transition.
+ */
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [toasts, setToasts] = useState<Toast[]>([])
 
@@ -35,25 +44,35 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   return (
     <ToastContext.Provider value={value}>
       {children}
-      <Snackbar
-        open={toasts.length > 0}
-        anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
-        sx={{ maxWidth: '100%' }}
+      <Box
+        sx={(theme) => ({
+          position: 'fixed',
+          bottom: 16,
+          left: '50%',
+          transform: 'translateX(-50%)',
+          zIndex: theme.zIndex.snackbar,
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'stretch',
+          gap: 1,
+          maxWidth: 'min(560px, calc(100vw - 32px))',
+          // The container is only a layout box; clicks belong to the toasts.
+          pointerEvents: 'none',
+        })}
       >
-        <Stack spacing={1} sx={{ width: '100%' }}>
-          {toasts.map((t) => (
+        {toasts.map((t) => (
+          <Grow key={t.id} in appear>
             <Alert
-              key={t.id}
               severity={t.severity}
               variant="filled"
               onClose={() => dismiss(t.id)}
-              sx={{ width: '100%' }}
+              sx={{ pointerEvents: 'auto', boxShadow: 3 }}
             >
               {t.message}
             </Alert>
-          ))}
-        </Stack>
-      </Snackbar>
+          </Grow>
+        ))}
+      </Box>
     </ToastContext.Provider>
   )
 }

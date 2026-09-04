@@ -1,16 +1,14 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import Chip from '@mui/material/Chip'
 import CircularProgress from '@mui/material/CircularProgress'
 import Dialog from '@mui/material/Dialog'
 import DialogContent from '@mui/material/DialogContent'
 import DialogTitle from '@mui/material/DialogTitle'
 import Divider from '@mui/material/Divider'
-import ListItemButton from '@mui/material/ListItemButton'
 import Menu from '@mui/material/Menu'
 import MenuItem from '@mui/material/MenuItem'
 import Stack from '@mui/material/Stack'
 import Typography from '@mui/material/Typography'
-import Box from '@mui/material/Box'
 import MoreVertIcon from '@mui/icons-material/MoreVert'
 import IconButton from '@mui/material/IconButton'
 import { useToast } from '../../app/ToastProvider'
@@ -22,6 +20,9 @@ import {
 } from './api'
 import type { CvMatch } from './api'
 import type { SearchCandidate } from './searchTypes'
+import { ImageLightbox } from '../../components/ImageLightbox'
+import { SeriesMatchRow } from './SeriesMatchRow'
+import { pullCoverUrl } from '../../lib/api'
 
 const ACTION_LABEL: Record<string, string> = {
   ignored: 'Ignored',
@@ -30,7 +31,13 @@ const ACTION_LABEL: Record<string, string> = {
   failed: 'Failed',
 }
 
-/** ComicVine picker — a posting title carries no CV id, so the user chooses. */
+/**
+ * Series picker — a posting title carries no ComicVine id, so the user chooses.
+ *
+ * Adding a series is not undoable in one click, so it is an explicit button
+ * rather than a click anywhere on the row; the row itself stays inert and the
+ * cover is a zoom target.
+ */
 function LookupDialog({
   open,
   onClose,
@@ -46,14 +53,39 @@ function LookupDialog({
 }) {
   const addSeries = useAddSeriesById()
   const toast = useToast()
+  const [pending, setPending] = useState<string | null>(null)
+  const [zoom, setZoom] = useState<CvMatch | null>(null)
+  // Covers are fetched by the lookup itself, so give late arrivals a retry.
+  const [epoch, setEpoch] = useState(0)
+
+  useEffect(() => {
+    if (!open || results.length === 0) return
+    const timers = [3_000, 9_000].map((ms) => setTimeout(() => setEpoch((n) => n + 1), ms))
+    return () => timers.forEach(clearTimeout)
+  }, [open, results.length])
+
+  const add = (r: CvMatch) => {
+    setPending(r.comicid)
+    addSeries.mutate(r.comicid, {
+      onSuccess: () => {
+        toast(`Adding ${r.name}. All issues wanted.`, 'success')
+        setPending(null)
+        onClose()
+      },
+      onError: (e) => {
+        toast((e as Error).message, 'error')
+        setPending(null)
+      },
+    })
+  }
 
   return (
     <Dialog open={open} onClose={onClose} fullWidth maxWidth="sm">
       <DialogTitle>
-        ComicVine matches
+        Find series
         {query && (
           <Typography variant="caption" sx={{ display: 'block', color: 'text.secondary' }}>
-            searched for “{query}”
+            ComicVine matches for “{query}”
           </Typography>
         )}
       </DialogTitle>
@@ -66,33 +98,24 @@ function LookupDialog({
         )}
         <Stack divider={<Divider />}>
           {results.slice(0, 25).map((r) => (
-            <ListItemButton
+            <SeriesMatchRow
               key={r.comicid}
+              match={r}
+              epoch={epoch}
+              adding={pending === r.comicid}
               disabled={addSeries.isPending}
-              onClick={() =>
-                addSeries.mutate(r.comicid, {
-                  onSuccess: () => {
-                    toast(`Adding ${r.name} — all issues wanted.`, 'success')
-                    onClose()
-                  },
-                  onError: (e) => toast((e as Error).message, 'error'),
-                })
-              }
-            >
-              <Box sx={{ minWidth: 0 }}>
-                <Typography variant="body2" sx={{ fontWeight: 600 }}>
-                  {r.name} ({r.comicyear})
-                </Typography>
-                <Typography variant="caption" sx={{ color: 'text.secondary' }}>
-                  {[r.publisher, r.issues ? `${r.issues} issues` : null]
-                    .filter(Boolean)
-                    .join(' · ')}
-                </Typography>
-              </Box>
-            </ListItemButton>
+              onAdd={add}
+              onZoom={setZoom}
+            />
           ))}
         </Stack>
       </DialogContent>
+
+      <ImageLightbox
+        src={zoom ? pullCoverUrl(null, zoom.comicid, epoch, 'zoom') : null}
+        alt={zoom?.name ?? ''}
+        onClose={() => setZoom(null)}
+      />
     </Dialog>
   )
 }
@@ -160,7 +183,7 @@ export function CandidateActions({ c }: { c: SearchCandidate }) {
         <MenuItem onClick={() => doDownload(true)} disabled={!c.link}>
           Download as one-shot
         </MenuItem>
-        <MenuItem onClick={doLookup}>Find on ComicVine…</MenuItem>
+        <MenuItem onClick={doLookup}>Find series…</MenuItem>
         <Divider />
         {c.action === 'ignored' ? (
           <MenuItem onClick={() => doIgnore(true)}>Un-ignore</MenuItem>
