@@ -65,6 +65,18 @@ Underneath, to make the above possible:
 Full detail, including every local patch and why it exists, is in [FORK.md](FORK.md).
 UI decisions are recorded in [DESIGN.md](DESIGN.md).
 
+## Screenshots
+
+**[See the full screenshots](SCREENSHOTS.md)** for what each screen does.
+
+<p align="center">
+  <a href="SCREENSHOTS.md#this-week"><img src="screens/backboard/thumbs/backboard-this-week.png" width="185" alt="This Week"></a>
+  <a href="SCREENSHOTS.md#series"><img src="screens/backboard/thumbs/backboard-series.png" width="185" alt="Series"></a>
+  <a href="SCREENSHOTS.md#a-single-series"><img src="screens/backboard/thumbs/backboard-single-series.png" width="185" alt="A single series"></a>
+  <a href="SCREENSHOTS.md#search-results"><img src="screens/backboard/thumbs/backboard-search-results.png" width="185" alt="Search results"></a>
+  <a href="SCREENSHOTS.md#unmatched-downloads"><img src="screens/backboard/thumbs/backboard-unmatched-downloads.png" width="185" alt="Unmatched downloads"></a>
+</p>
+
 ## Installing
 
 Mylar itself runs exactly as upstream does. The UI is a build artifact that is **not**
