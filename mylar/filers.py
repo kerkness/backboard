@@ -92,7 +92,7 @@ class FileHandlers(object):
 
         if mylar.OS_DETECT == 'Windows':
             if '/' in folder_format:
-                folder_format = re.sub('/', '\\', folder_format).strip()
+                folder_format = folder_format.replace('/', '\\').strip()
         else:
             if '\\' in folder_format:
                 folder_format = folder_format.replace('\\', '/').strip()
@@ -345,7 +345,7 @@ class FileHandlers(object):
                         volumeyear = True
                     else:
                         volumeyear = False
-                    if '$Type' not in tmp_ff and booktype != ck['Type']:
+                    if '$Type' not in tmp_ff and booktype != ck['Type'] and booktype is not None and booktype != 'Print':
                         logger.fdebug('[SERIES_FOLDER_COLLISION_DETECTION] Trying to rename using BookType declaration.')
                         new_format = os.path.join(tmp_ff_head, '%s [%s]' % (tmp_ff, '$Type'))
                     elif '$Volume' not in tmp_ff:
